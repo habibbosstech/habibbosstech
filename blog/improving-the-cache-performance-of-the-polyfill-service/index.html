@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+  <html lang="en">
+    
+<!-- Mirrored from jakechampion.name/blog/improving-the-cache-performance-of-the-polyfill-service/ by HTTrack Website Copier/3.x [XR&CO'2014], Mon, 20 Nov 2023 05:29:29 GMT -->
+<!-- Added by HTTrack --><meta http-equiv="content-type" content="text/html;charset=UTF-8" /><!-- /Added by HTTrack -->
+<head>
+       <meta charset="UTF-8" />
+  <title>jakechampion.name</title>
+  <link
+    rel="preload"
+    as="font" type="font/woff2"
+    href="../../font/montserrat.woff2"
+    crossorigin
+  />
+  <link
+    rel="preload"
+    as="font" type="font/woff2"
+    href="../../font/source-code-pro.woff2"
+    crossorigin
+  />
+  <link
+    rel="preload"
+    as="font" type="font/woff2"
+    href="../../font/source-serif-pro.woff2"
+    crossorigin
+  />
+  <link rel="stylesheet" href="../../main.css" />
+  <link rel="icon" href="../../media/favicon.png" type="image/png" />
+  <link href="../../rss.xml" rel="alternate" type="application/rss+xml" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#ffffff" />
+
+  <meta name="author" content="Jake Champion" />
+  <meta name="description" content="Jake Champion&#39;s space on the web" />
+
+  <meta property="og:image" content="/ogImage/{{current_url | safe}}" />
+  <!-- Need Twitter card to be a summary with large image, or else image will be smaller -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="/ogImage/{{current_url | safe}}" />
+      <script src="../../main.js" defer></script>
+    </head>
+    <body>
+      <a class="skip-link" href="#content">Skip to content</a>
+      <div class="page-wrap">
+        <header class="page-header">
+          <h1><a href="../../index.html">Jake Champion</a></h1>
+        </header>
+        
+    <nav class="page-nav" aria-label="primary">
+        <ul>
+            <li>
+                <a href="../../blog.html">Writing</a>
+            </li>
+            <li>
+                <a href="../../notes.html">Notes</a>
+            </li>
+            <li>
+                <a href="../../rss.xml" rel="alternate" type="application/rss+xml">RSS</a>
+            </li>
+            <li>
+                <a href="https://twitter.com/jakedchampion" target="_blank">Twitter</a>
+            </li>
+        </ul>
+    </nav>
+        <main id="content" class="page-main">
+          <article class="article flow">
+            <header>
+              <h1 class="entry-title">Improving the cache performance of The Polyfill Service</h1>
+              <p class="summary"></p>
+              <div class="post-info">
+                <time class="published" datetime="Fri Jun 09 2017 12:36:55 GMT+0000 (UTC)"
+                  >Published on 9<sup>th</sup> of June, 2017</time
+                >
+                
+              </div>
+            </header>
+            <p>On May 6th 2018 we were able to serve 204 million requests in a single day, serving 99.3% of those from our CDN.</p>
+<p>The <a href="https://polyfill.io/">Polyfill Service</a> is a web service that serves JavaScript <a href="https://remysharp.com/2010/10/08/what-is-a-polyfill">polyfills</a> only to the browsers which require them. It’s a service operated by The Financial Times, with Fastly sponsoring the CDN.</p>
+<p>As you can see from <a href="https://polyfill.io/v2/docs/usage">our usage numbers</a> the service is quite popular, serving hundreds of millions of requests every day. Thankfully, on average, 95.6% of the traffic is served from the Fastly CDN and doesn’t need to go back to our servers.</p>
+<p><img src="usage-numbers.png" alt="A graph of the usage numbers over the last 180 days. Daily usage is approximately 210 million." title="Usage numbers graph from https://polyfill.io/v2/docs/usage"></p>
+<p>We’re always looking for ways to improve our cache-hit ratio. Up until recently, our technique is to take the user-agent string from the browser requesting our service and normalise it to something more cacheable by only keeping the name, and the major and minor version of the browser.</p>
+<p>We also set a cache-control header of 7 days. This means that when a new version of the service is released, it will take at most 7 days to start serving the new content to all requests.</p>
+<p>This article is about the three things we did to improve our cache-hit ratio from 95.6% to 99.3% using some clever stuff in Fastly.</p>
+<p>Recently we’ve seen the traffic to the Polyfill Service increase from around 50 million requests per day to around 170 million. With a cache-hit ratio of 95.6%, that meant our traffic to Origin increased to nearly 7.5 million requests.</p>
+<h2 id="marking-stale-content" tabindex="-1">Marking stale content</h2>
+<p>Fastly has the ability to mark content in the CDN as stale via an API. Fastly also has the ability to tag content with keys, which you can then use to mark multiple pieces of content as stale.</p>
+<p>The only time a response to a previously cached request would be different from before is when a new version of the Polyfill Service has been deployed. Responses don’t change between code releases. This means when we make a release, we can mark all the content as stale as it may have changed. This means the CDN will start serving the new content straight away, rather than having take at most 7 days. This doesn’t help our cache hit ratio but it does improve our service for users</p>
+<h2 id="using-surrogate-cache-control" tabindex="-1">Using surrogate-cache-control</h2>
+<p>CDNs listen to multiple response headers when deciding how long to store content for. One of these headers is <code>surrogate-cache-control</code>, this is different to <code>cache-control</code> because <code>cache-control</code> is also used to tell browsers how long to store something for whereas, <code>surrogate-cache-control</code> is only listened to by CDNs. Having the ability to tell a CDN to store content for a different amount of time than we tell the browser is a really good idea.</p>
+<p>Deployments happen at most once per month. Having the CDN only store content for 7 days is not making the most of the CDN because when the content is marked as stale it probably hasn’t actually changed. Instead we can tell the CDN to store content for a duration of time which is longer than the time between deployments (E.G. 1 year). If we combine this change with the stale marking one from earlier, this means the CDN removes all of it’s content when we deploy a new version of the Polyfill Service and will store the content from the new service until the next deployment occurs or when a year has passed.</p>
+<h2 id="preventing-cache-busting" tabindex="-1">Preventing cache busting</h2>
+<p>The final thing we can do to improve the cacheing is to prevent users from busting past our CDN by only allowing query-string parameters through which are defined in our API. Cache-busting the Polyfill Service does not serve any purpose for users, it only harms the service for everyone.</p>
+<p>By combining all of these changes we were able to serve 204 million requests in a single day, serving 99.3% of those requests from our CDN.</p>
+<p><img src="cache-hit-ratio.png" alt="Pie chart showing the cache-hit ratio of the last 7 days. 99.3% are cache hits and 0.7% are cache misses." title="Cache-hit ratio pie chart from https://polyfill.io/v2/docs/usage"></p>
+
+          </article>
+        </main>
+      </div>
+       <script
+  data-goatcounter="https://jdc.goatcounter.com/count"
+  async
+  src="../../../gc.zgo.at/count.js"
+></script>
+    </body>
+  
+<!-- Mirrored from jakechampion.name/blog/improving-the-cache-performance-of-the-polyfill-service/ by HTTrack Website Copier/3.x [XR&CO'2014], Mon, 20 Nov 2023 05:29:31 GMT -->
+</html>
