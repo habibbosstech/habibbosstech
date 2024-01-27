@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+  <html lang="en">
+    
+<!-- Mirrored from Habib Rajput's/notes/loop-command-forever-in-zsh/ by HTTrack Website Copier/3.x [XR&CO'2014], Mon, 20 Nov 2023 05:29:31 GMT -->
+<!-- Added by HTTrack --><meta http-equiv="content-type" content="text/html;charset=UTF-8" /><!-- /Added by HTTrack -->
+<head>
+       <meta charset="UTF-8" />
+  <title>Habib Rajput's</title>
+  <link
+    rel="preload"
+    as="font" type="font/woff2"
+    href="../../font/montserrat.woff2"
+    crossorigin
+  />
+  <link
+    rel="preload"
+    as="font" type="font/woff2"
+    href="../../font/source-code-pro.woff2"
+    crossorigin
+  />
+  <link
+    rel="preload"
+    as="font" type="font/woff2"
+    href="../../font/source-serif-pro.woff2"
+    crossorigin
+  />
+  <link rel="stylesheet" href="../../main.css" />
+  <link rel="icon" href="../../media/favicon.png" type="image/png" />
+  <link href="../../rss.xml" rel="alternate" type="application/rss+xml" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#ffffff" />
+
+  <meta name="author" content="Habib Rajput's" />
+  <meta name="description" content="Habib Rajput's&#39;s space on the web" />
+
+  <meta property="og:image" content="/ogImage/{{current_url | safe}}" />
+  <!-- Need Twitter card to be a summary with large image, or else image will be smaller -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="/ogImage/{{current_url | safe}}" />
+      <script src="../../main.js" defer></script>
+    </head>
+    <body>
+      <a class="skip-link" href="#content">Skip to content</a>
+      <div class="page-wrap">
+        <header class="page-header">
+          <h1><a href="../../index.html">Habib Rajput's</a></h1>
+        </header>
+        
+    <nav class="page-nav" aria-label="primary">
+        <ul>
+            <li>
+                <a href="../../blog.html">Writing</a>
+            </li>
+            <li>
+                <a href="../../notes.html">Notes</a>
+            </li>
+            <li>
+                <a href="../../rss.xml" rel="alternate" type="application/rss+xml">RSS</a>
+            </li>
+            <li>
+                <a href="https://twitter.com/jakedchampion" target="_blank">Twitter</a>
+            </li>
+        </ul>
+    </nav>
+        <main id="content" class="page-main">
+          <article class="article flow">
+            <header>
+              <h1 class="entry-title">Custom function to run a command in a loop in bash/zsh</h1>
+              <p class="summary"></p>
+              <div class="post-info">
+                <time class="published" datetime="Sat Feb 20 2021 00:43:42 GMT+0000 (UTC)"
+                  >Published on 20<sup>th</sup> of February, 2021</time
+                >
+                
+              </div>
+            </header>
+            <pre><code class="language-bash" data-lang="bash" spellcheck="false" contenteditable="true"><span class="hljs-keyword">function</span> <span class="hljs-function"><span class="hljs-title">loop</span></span>() {
+    <span class="hljs-keyword">for</span> ((;;)) { <span class="hljs-built_in">eval</span> <span class="hljs-string">&quot;<span class="hljs-variable">$@</span>&quot;</span> }
+}
+</code></pre>
+<p>If you place this in your <code>~/.zshrc</code>, <code>~/.bashrc</code>, or equivalent then you can use it like so:</p>
+<pre><code class="language-bash" data-lang="bash" spellcheck="false" contenteditable="true">loop <span class="hljs-built_in">echo</span> <span class="hljs-string">&quot;hello&quot;</span>
+</code></pre>
+<p>To stop running the command you can press <kbd>Ctrl</kbd> <kbd>c</kbd>.</p>
+
+          </article>
+        </main>
+      </div>
+       <script
+  data-goatcounter="https://jdc.goatcounter.com/count"
+  async
+  src="../../../gc.zgo.at/count.js"
+></script>
+    </body>
+  
+<!-- Mirrored from Habib Rajput's/notes/loop-command-forever-in-zsh/ by HTTrack Website Copier/3.x [XR&CO'2014], Mon, 20 Nov 2023 05:29:31 GMT -->
+</html>

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<meta http-equiv="content-type" content="text/html;charset=UTF-8" /><!-- /Added by HTTrack -->
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Habib Rajput's</title>
+  <link rel="preload" as="font" type="font/woff2" href="../../font/montserrat.woff2" crossorigin />
+  <link rel="preload" as="font" type="font/woff2" href="../../font/source-code-pro.woff2" crossorigin />
+  <link rel="preload" as="font" type="font/woff2" href="../../font/source-serif-pro.woff2" crossorigin />
+  <link rel="stylesheet" href="../../main.css" />
+  <link rel="icon" href="../../media/favicon.png" type="image/png" />
+  <link href="../../rss.xml" rel="alternate" type="application/rss+xml" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#ffffff" />
+
+  <meta name="author" content="Habib Rajput's" />
+  <meta name="description" content="Habib Rajput's&#39;s space on the web" />
+
+  <meta property="og:image" content="/ogImage/{{current_url | safe}}" />
+  <!-- Need Twitter card to be a summary with large image, or else image will be smaller -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="/ogImage/{{current_url | safe}}" />
+  <script src="../../main.js" defer></script>
+</head>
+
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <div class="page-wrap">
+    <header class="page-header">
+      <h1><a href="../../index.html">Habib Rajput's</a></h1>
+    </header>
+
+    <nav class="page-nav" aria-label="primary">
+      <ul>
+        <li>
+          <a href="../../blog.html">Writing</a>
+        </li>
+        <li>
+          <a href="../../notes.html">Notes</a>
+        </li>
+        <li>
+          <a href="../../rss.xml" rel="alternate" type="application/rss+xml">RSS</a>
+        </li>
+        <li>
+          <a href="https://twitter.com/jakedchampion" target="_blank">Twitter</a>
+        </li>
+      </ul>
+    </nav>
+    <main id="content" class="page-main">
+      <article class="article flow">
+        <header>
+          <h1 class="entry-title">Git aliases to improve working on projects which have different names for their
+            default branch</h1>
+          <p class="summary"></p>
+          <div class="post-info">
+            <time class="published" datetime="Sun Feb 28 2021 15:36:46 GMT+0000 (UTC)">Published on 28<sup>th</sup> of
+              February, 2021</time>
+
+          </div>
+        </header>
+        <p>Now that more git repositories are changing the default branch name to something other than master, I’ve
+          found I struggle to remember what the default branch name is for different projects.</p>
+        <p>I have added two git aliases which solve this issue for me and I thought I’d share them here in case they are
+          useful to someone else:</p>
+        <ul>
+          <li>The first one is called <code>default-branch</code> and it will print out the name of the default branch
+            for a git repository</li>
+          <li>The second is called <code>checkout-default</code> and it will do a git checkout to the default branch for
+            a git repository</li>
+        </ul>
+        <p>You can install these aliases by running the below commands:</p>
+        <pre><code class="language-bash" data-lang="bash" spellcheck="false" contenteditable="true">git config --global alias.default-branch <span class="hljs-string">&#x27;!git remote show origin | awk &quot;/HEAD branch/ {print \$NF}&quot;&#x27;</span>
+git config --global alias.checkout-default <span class="hljs-string">&#x27;!git checkout $(git default-branch)&#x27;</span>
+</code></pre>
+        <p>Now when you want to be on the default branch, instead of having to remember, or find out the default branch
+          manually, you can instead do <code>git checkout-default</code>.</p>
+
+      </article>
+    </main>
+  </div>
+  <script data-goatcounter="https://jdc.goatcounter.com/count" async src="../../../gc.zgo.at/count.js"></script>
+</body>
+
+</html>

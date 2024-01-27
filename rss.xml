@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="https://www.w3.org/2005/Atom" version="2.0">
+    <channel>
+        <title>Habib Rajput's</title>
+        <link>https://Habib Rajput's/</link>
+        <description>Habib Rajput's's space on the web</description>
+        <generator>Bespoke</generator>
+        <language>en</language>
+        <atom:link href="https://Habib Rajput's/rss.xml" rel="self" type="application/rss+xml"/>
+        <lastBuildDate>Mon, 20 Nov 2023 05:29:21 GMT}</lastBuildDate>
+        
+        <item>
+            <title>Git aliases to improve working on projects which have different names for their default branch</title>
+            <pubDate>Sun, 28 Feb 2021 15:36:46 GMT</pubDate>
+            <link>https://Habib Rajput's/notes/git-aliases-to-help-working-with-different-default-branches/</link>
+            <guid>https://Habib Rajput's/notes/git-aliases-to-help-working-with-different-default-branches/</guid>
+            <description>Two small aliases to replace having to remember the default branch name of any project</description>
+        </item>
+
+        <item>
+            <title>How to detect when a specific global variable is set</title>
+            <pubDate>Sun, 21 Feb 2021 18:17:49 GMT</pubDate>
+            <link>https://Habib Rajput's/notes/how-to-detect-when-a-specific-global-variable-is-set/</link>
+            <guid>https://Habib Rajput's/notes/how-to-detect-when-a-specific-global-variable-is-set/</guid>
+            <description>A small snippet (6 lines) of code to detect when a global variable is set</description>
+        </item>
+
+        <item>
+            <title>Custom function to run a command in a loop in bash/zsh</title>
+            <pubDate>Sat, 20 Feb 2021 00:43:42 GMT</pubDate>
+            <link>https://Habib Rajput's/notes/loop-command-forever-in-zsh/</link>
+            <guid>https://Habib Rajput's/notes/loop-command-forever-in-zsh/</guid>
+            <description>Simple, small function to add to your dotfiles to run a command in a loop</description>
+        </item>
+
+        <item>
+            <title>Improving the cache performance of The Polyfill Service even more</title>
+            <pubDate>Mon, 21 Jan 2019 14:20:02 GMT</pubDate>
+            <link>https://Habib Rajput's/blog/improving-the-cache-performance-of-the-polyfill-service-even-more/</link>
+            <guid>https://Habib Rajput's/blog/improving-the-cache-performance-of-the-polyfill-service-even-more/</guid>
+            <description>How we increased the cache-hit ratio once more, from 99.3% to 99.994%</description>
+        </item>
+
+        <item>
+            <title>Improving the cache performance of The Polyfill Service</title>
+            <pubDate>Fri, 09 Jun 2017 12:36:55 GMT</pubDate>
+            <link>https://Habib Rajput's/blog/improving-the-cache-performance-of-the-polyfill-service/</link>
+            <guid>https://Habib Rajput's/blog/improving-the-cache-performance-of-the-polyfill-service/</guid>
+            <description>Three things we did to improve the cache-hit ratio from 95.6% to 99.3%</description>
+        </item>
+    </channel>
+</rss>

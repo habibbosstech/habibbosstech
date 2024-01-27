@@ -1,0 +1,3498 @@
+<!DOCTYPE html>
+  <html lang="en">
+    
+<!-- Mirrored from Habib Rajput's/blog/improving-the-cache-performance-of-the-polyfill-service-even-more/ by HTTrack Website Copier/3.x [XR&CO'2014], Mon, 20 Nov 2023 05:29:27 GMT -->
+<!-- Added by HTTrack --><meta http-equiv="content-type" content="text/html;charset=UTF-8" /><!-- /Added by HTTrack -->
+<head>
+       <meta charset="UTF-8" />
+  <title>Habib Rajput's</title>
+  <link
+    rel="preload"
+    as="font" type="font/woff2"
+    href="../../font/montserrat.woff2"
+    crossorigin
+  />
+  <link
+    rel="preload"
+    as="font" type="font/woff2"
+    href="../../font/source-code-pro.woff2"
+    crossorigin
+  />
+  <link
+    rel="preload"
+    as="font" type="font/woff2"
+    href="../../font/source-serif-pro.woff2"
+    crossorigin
+  />
+  <link rel="stylesheet" href="../../main.css" />
+  <link rel="icon" href="../../media/favicon.png" type="image/png" />
+  <link href="../../rss.xml" rel="alternate" type="application/rss+xml" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#ffffff" />
+
+  <meta name="author" content="Habib Rajput's" />
+  <meta name="description" content="Habib Rajput's&#39;s space on the web" />
+
+  <meta property="og:image" content="/ogImage/{{current_url | safe}}" />
+  <!-- Need Twitter card to be a summary with large image, or else image will be smaller -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="/ogImage/{{current_url | safe}}" />
+      <script src="../../main.js" defer></script>
+    </head>
+    <body>
+      <a class="skip-link" href="#content">Skip to content</a>
+      <div class="page-wrap">
+        <header class="page-header">
+          <h1><a href="../../index.html">Habib Rajput's</a></h1>
+        </header>
+        
+    <nav class="page-nav" aria-label="primary">
+        <ul>
+            <li>
+                <a href="../../blog.html">Writing</a>
+            </li>
+            <li>
+                <a href="../../notes.html">Notes</a>
+            </li>
+            <li>
+                <a href="../../rss.xml" rel="alternate" type="application/rss+xml">RSS</a>
+            </li>
+            <li>
+                <a href="https://twitter.com/jakedchampion" target="_blank">Twitter</a>
+            </li>
+        </ul>
+    </nav>
+        <main id="content" class="page-main">
+          <article class="article flow">
+            <header>
+              <h1 class="entry-title">Improving the cache performance of The Polyfill Service even more</h1>
+              <p class="summary"></p>
+              <div class="post-info">
+                <time class="published" datetime="Mon Jan 21 2019 14:20:02 GMT+0000 (UTC)"
+                  >Published on 21<sup>st</sup> of January, 2019</time
+                >
+                
+              </div>
+            </header>
+            <script defer src="../../../fiddle.fastly.dev/embed.js" ></script>
+<p>From January 13th to January 19th 2019, <a href="https://polyfill.io/">polyfill.io</a> served 1,672,663,851 requests. 99.994% of which were served from Fastly’s cache. To achieve such a high cache-hit ratio, we employed some novel solutions using <abbr title="Varnish Configuration Language">VCL</abbr>. In this article I will explain how we went about achieving this result.</p>
+<h2 id="what-is-polyfill.io-and-how-does-it-work%3F" tabindex="-1">What is <a href="http://polyfill.io/">polyfill.io</a> and how does it work?</h2>
+<p><a href="http://polyfill.io/">Polyfill.io</a> is a service which serves polyfills for features which are missing in the requesting User-Agent. It works in three broad steps:</p>
+<ol>
+<li>It reads the request url to figure out which features the website is wanting to polyfill</li>
+<li>It reads the User-Agent header to see what features it is missing</li>
+<li>It serves polyfills for the missing features that were included in the request url</li>
+</ol>
+<h2 id="how-the-caching-works" tabindex="-1">How the caching works</h2>
+<p><a href="http://polyfill.io/">Polyfill.io</a> uses <a href="https://varnish-cache.org/intro/">Varnish Cache</a>, specifically it uses <a href="https://www.fastly.com/blog/benefits-using-varnish">Fastly’s Varnish Cache</a>. When a request is made to <a href="http://polyfill.io/">polyfill.io</a>, the Varnish Cache server will handle the request, create a hash key and check if an object in its cache has the corresponding hash key. If it does, then <a href="http://polyfill.io/">polyfill.io</a> responds with the cached object.</p>
+<p>Varnish Cache is a programmable cache, which is great because it allows us to define how the hash key is created. We decided to use the <abbr title="Uniform Resource Locater">URL</abbr> path and query-parameters as the hash key because they are the interface to our <abbr title="Application Program Interface">API</abbr>. The rest of this post goes into how we made different request <abbr title="Uniform Resource Locater">URL</abbr>s end up being the same <abbr title="Uniform Resource Locater">URL</abbr> before Varnish Cache generates the hash key.</p>
+<!-- [The code used to generate the hash key](https://fiddle.fastlydemo.net/fiddle/f8c1de59/embedded) -->
+<figure class="code"><figcaption>The code used to generate the hash key</figcaption>
+<pre><code class="language-vcl" data-lang="vcl" spellcheck="false" contenteditable="true">sub vcl_hash {
+  if (req.http.Fastly-Debug) {
+    call breadcrumb_hash;
+  }
+
+  # We are not adding req.http.host to the hash because we want https://cdn.polyfill.io and https://polyfill.io to be a single object in the cache.
+  # set req.hash += req.http.host;
+  set req.hash += req.url;
+  # We include return(hash) to stop the function falling through to the default VCL built into varnish, which for vcl_hash will add req.url and req.http.Host to the hash.
+  return(hash);
+}
+</code></pre>
+</figure>
+<!-- <small>[You can also view the code on GitHub](https://github.com/Financial-Times/polyfill-service/blob/714623bdfff470b865c0e6f7746db5f6908f3acc/fastly/vcl/polyfill-service.vcl#L88-L98)</small> -->
+<h2 id="normalising-the-query-parameters" tabindex="-1">Normalising the query parameters</h2>
+<p><a href="http://polyfill.io/">Polyfill.io</a> users specify what features they need in their request’s query parameters. For example this request:</p>
+<p><code>https://polyfill.io/v3/polyfill.js?features=IntersectionObserver,fetch&amp;callback=polyfillsLoaded</code></p>
+<p>is configuring the polyfill bundle to contain polyfills for <a href="https://developer.mozilla.org/en-US/docs/Web/API/WindowOrWorkerGlobalScope/fetch"><code>fetch</code></a>, <a href="https://developer.mozilla.org/en-US/docs/Web/API/IntersectionObserver"><code>IntersectionObserver</code></a>, and to call <code>polyfillsLoaded</code> once done.</p>
+<p>Due to flexibility in the way urls can be formulated, many other string formulations would configure this exact same polyfill bundle.<br>
+A non-exhaustive list:</p>
+<ol>
+<li><code>polyfill.io/v3/polyfill.js?features=IntersectionObserver,fetch&amp;callback=polyfillsLoaded</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?features=fetch,IntersectionObserver&amp;callback=polyfillsLoaded</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=fetch,IntersectionObserver</code></li>
+<li><code>polyfill.io/v3/polyfill.js?features=fetch,IntersectionObserver&amp;callback=polyfillsLoaded&amp;zebra=striped</code></li>
+<li><code>polyfill.io/v3/polyfill.js?features=IntersectionObserver,fetch&amp;callback=polyfillsLoaded&amp;unknown=polyfill</code></li>
+</ol>
+<p>We want all of these different URLs to point to the same response in the cache. To do this they need to use the same hash key. The way we achieve that is to convert them all to the same URL before the Varnish Cache creates the key.</p>
+<p>Some of the URLs in the list have the exact same query parameters, only in different orders. We can re-order the query parameters with a function that Fastly provide called <a href="https://docs.fastly.com/vcl/functions/querystring-sort/"><code>querystring.sort</code></a>. This function alone will turn URLs 1 and 2 into the same URL. It will do the same for URLs 3 and 4.</p>
+<!-- [You can view the code for this at fiddle.fastlydemo.net/fiddle/2dca4d1c](https://fiddle.fastlydemo.net/fiddle/2dca4d1c/embedded) -->
+<pre><code class="language-vcl" data-lang="vcl" spellcheck="false" contenteditable="true">sub vcl_recv {
+  # Store original url for logging purposes.
+  declare local var.original-url STRING;
+  set var.original-url = req.url;
+
+  set req.url = querystring.sort(req.url);
+
+  log &quot;Original url: &quot; var.original-url;
+  log &quot;Updated  url: &quot; req.url;
+}
+</code></pre>
+<p>Listing the URLs again, now with the query parameters sorted:</p>
+<ol>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=fetch,IntersectionObserver</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=fetch,IntersectionObserver</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=fetch,IntersectionObserver&amp;zebra=striped</code></li>
+<li><code>polyfill.io/v3/polyfill.js?features=IntersectionObserver,fetch&amp;callback=polyfillsLoaded&amp;unknown=polyfill</code></li>
+</ol>
+<p>There are still more differences that we can normalise:</p>
+<p>The order of the comma-separated features in the features parameter isn’t the same for URLs 2 and 3. We would need to sort those features by some manner in order to make them identical. Neither Varnish Cache nor Fastly offer a pre-built function to sort a string, VCL also does not have a way to loop through items either, which makes this a bit trickier to solve.</p>
+<p>The way we solved this issue was by creating a function which takes a comma-separated string and turns it into a URL where each item in the comma-separated string is a lone-standing query parameter. Then we can use the same <code>querystring.sort</code> function that we used earlier, and finally, we turn the query parameters back into a comma-separated string.</p>
+<!-- [You can view the code for this at fiddle.fastlydemo.net/fiddle/a2950143](https://fiddle.fastlydemo.net/fiddle/a2950143/embedded) -->
+<pre><code class="language-vcl" data-lang="vcl" spellcheck="false" contenteditable="true">sub sort_comma_separated_value {
+  # This function takes a CSV and tranforms it into a url where each
+  # comma-separated-value is a query-string parameter and then uses
+  # Fastly's querystring.sort function to sort the values. Once sorted
+  # it then turn the query-parameters back into a CSV.
+  # Set the CSV on the header `Sort-Value`.
+  # Returns the sorted CSV on the header `Sorted-Value`.
+  declare local var.value STRING;
+  set var.value = req.http.Sort-value;
+
+  # If query value does not exist or is empty, set it to &quot;&quot;
+  set var.value = if(var.value != &quot;&quot;, var.value, &quot;&quot;);
+
+  # Replace all `&amp;` characters with `^`, this is because `&amp;` would break the value up into pieces.
+  set var.value = regsuball(var.value, &quot;&amp;&quot;, &quot;^&quot;);
+
+  # Replace all `,` characters with `&amp;` to break them into individual query values
+  # Append `1-` infront of all the query values to make them simpler to transform later
+  set var.value = &quot;1-&quot; regsuball(var.value, &quot;,&quot;, &quot;&amp;1-&quot;);
+
+  # Create a url-like string in order for querystring.sort to work.
+  set var.value = querystring.sort(&quot;https://www.example.com?&quot; var.value);
+
+  # Grab all the query values from the sorted url
+  set var.value = regsub(var.value, &quot;https://www.example.com\?&quot;, &quot;&quot;);
+
+  # Reverse all the previous transformations to get back the single `features` query value value
+  set var.value = regsuball(var.value, &quot;1-&quot;, &quot;&quot;);
+  set var.value = regsuball(var.value, &quot;&amp;&quot;, &quot;,&quot;);
+  set var.value = regsuball(var.value, &quot;\^&quot;, &quot;&amp;&quot;);
+
+  set req.http.Sorted-Value = var.value;
+}
+
+sub vcl_recv {
+  # Store original url for logging purposes.
+  declare local var.original-url STRING;
+  set var.original-url = req.url;
+
+  if (req.url.qs ~ &quot;(?i)[^&amp;=]*features=([^&amp;]+)&quot;) {
+    # Need to decode %2C into ,
+    set req.http.Sort-Value = urldecode(re.group.1);
+    call sort_comma_separated_value;
+    set req.url = querystring.set(req.url, &quot;features&quot;, req.http.Sorted-Value);
+  }
+
+  set req.url = querystring.sort(req.url);
+
+  log &quot;Original url: &quot; var.original-url;
+  log &quot;Updated  url: &quot; req.url;
+}
+</code></pre>
+<p>Using this function will make URLs 1, 2, 3 and 4 identical.</p>
+<p>Listing the URLs again, after this function has been used:</p>
+<ol>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch&amp;zebra=striped</code></li>
+<li><code>polyfill.io/v3/polyfill.js?features=IntersectionObserver,fetch&amp;callback=polyfillsLoaded&amp;unknown=polyfill</code></li>
+</ol>
+<p>The 5th URL has configured <code>zebra</code> to <code>striped</code>, but <code>zebra</code> is not part of the API for configuring a polyfill bundle. Let’s add a function to only keep query parameters in the URL which are actually part of the public API. We can achieve this with a function that Fastly provide called <a href="https://docs.fastly.com/vcl/functions/querystring-regfilter-except/"><code>querystring.regfilter_except</code></a>. Using this function will make URLs 1, 2, 3, 4, and 5 become identical.</p>
+<!-- [You can view the code for this at fiddle.fastlydemo.net/fiddle/784c6fc6](https://fiddle.fastlydemo.net/fiddle/784c6fc6/embedded) -->
+<pre><code class="language-vcl" data-lang="vcl" spellcheck="false" contenteditable="true">sub vcl_recv {
+  # Store original url for logging purposes.
+  declare local var.original-url STRING;
+  set var.original-url = req.url;
+
+  # Remove all querystring parameters which are not part of the public API.
+  set req.url = querystring.regfilter_except(req.url, &quot;^(features|excludes|rum|unknown|flags|version|ua|callback|compression)$&quot;);
+
+  log &quot;Original url: &quot; var.original-url;
+  log &quot;Updated  url: &quot; req.url;
+}
+</code></pre>
+<p>Listing the URLs again, after this function has been used:</p>
+<ol>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?callback=polyfillsLoaded&amp;features=IntersectionObserver,fetch</code></li>
+<li><code>polyfill.io/v3/polyfill.js?features=IntersectionObserver,fetch&amp;callback=polyfillsLoaded&amp;unknown=polyfill</code></li>
+</ol>
+<p>The 6th URL has set <code>unknown</code> to <code>polyfill</code>, which just happens to be the same as the default value for <code>unknown</code>. If we add the default values into the URL for the parameters which have not been set, we can make all the URLs in the list become identical. Remember, we use the URL as the hash key within Fastly, so making these requests use the same URL internally will mean that they point to the same response in the cache, which is what we are trying to achieve.</p>
+<!-- [You can view the code for this at fiddle.fastlydemo.net/fiddle/8771bc22](https://fiddle.fastlydemo.net/fiddle/8771bc22/embedded) -->
+<pre><code class="language-vcl" data-lang="vcl" spellcheck="false" contenteditable="true">sub normalise_querystring_parameters_for_polyfill_bundle {
+  # Remove all querystring parameters which are not part of the public API.
+  set req.url = querystring.regfilter_except(req.url, &quot;^(features|excludes|rum|unknown|flags|version|ua|callback|compression)$&quot;);
+
+  # (?i) makes the regex case-insensitive
+  # The regex will match only if their are characters after `features=` which are not an ampersand (&amp;).
+  if (req.url.qs ~ &quot;(?i)[^&amp;=]*features=([^&amp;]+)&quot;) {
+    # Parameter has already been set, use the already set value.
+    # re.group.1 is the first regex capture group in the regex above.
+    if (std.strlen(re.group.1) &lt; 100) {
+      # We add the value of the features parameter to this header
+      # This is to be able to have sort_comma_separated_value sort the value
+      set req.http.Sort-Value = urldecode(re.group.1);
+      call sort_comma_separated_value;
+      # The header Sorted-Parameter now contains the sorted version of the features parameter.
+      set req.url = querystring.set(req.url, &quot;features&quot;, req.http.Sorted-Value);
+    }
+  } else {
+    # Parameter has not been set, use the default value.
+    set req.url = querystring.set(req.url, &quot;features&quot;, &quot;default&quot;);
+  }
+
+  # (?i) makes the regex case-insensitive
+  # The regex will match only if their are characters after `excludes=` which are not an ampersand (&amp;).
+  if (req.url.qs ~ &quot;(?i)[^&amp;=]*excludes=([^&amp;]+)&quot;) {
+    # Parameter has already been set, use the already set value.
+    # re.group.1 is the first regex capture group in the regex above.
+    if (std.strlen(re.group.1) &lt; 100) {
+      # We add the value of the excludes parameter to this header
+      # This is to be able to have sort_comma_separated_value sort the value
+      set req.http.Sort-Value = urldecode(re.group.1);
+      call sort_comma_separated_value;
+      # The header Sorted-Parameter now contains the sorted version of the excludes parameter.
+      set req.url = querystring.set(req.url, &quot;excludes&quot;, req.http.Sorted-Value);
+    }
+  } else {
+    # If excludes is not set, set to default value &quot;&quot;
+    set req.url = querystring.filter(req.url, &quot;excludes&quot;);
+    set req.url = if(req.url ~ &quot;\?&quot;, req.url &quot;&amp;excludes=&quot;, req.url &quot;?excludes=&quot;);
+  }
+
+  # If rum is not set, set to default value &quot;0&quot;
+  if (req.url.qs !~ &quot;(?i)[^&amp;=]*rum=([^&amp;]+)&quot;) {
+    set req.url = querystring.set(req.url, &quot;rum&quot;, &quot;0&quot;);
+  }
+
+  # If unknown is not set, set to default value &quot;polyfill&quot;
+  if (req.url.qs !~ &quot;(?i)[^&amp;=]*unknown=([^&amp;]+)&quot;) {
+    set req.url = querystring.set(req.url, &quot;unknown&quot;, &quot;polyfill&quot;);
+  }
+
+  # If flags is not set, set to default value &quot;&quot;
+  if (req.url.qs !~ &quot;(?i)[^&amp;=]*flags=([^&amp;]+)&quot;) {
+    set req.url = querystring.filter(req.url, &quot;flags&quot;);
+    set req.url = if(req.url ~ &quot;\?&quot;, req.url &quot;&amp;flags=&quot;, req.url &quot;?flags=&quot;);
+  }
+
+  # If version is not set, set to default value &quot;&quot;
+  declare local var.version STRING;
+  if (req.url.qs !~ &quot;(?i)[^&amp;=]*version=([^&amp;]+)&quot;) {
+    set req.url = querystring.filter(req.url, &quot;version&quot;);
+    set req.url = if(req.url ~ &quot;\?&quot;, req.url &quot;&amp;version=&quot;, req.url &quot;?version=&quot;);
+  }
+
+  # If ua is not set, normalise the User-Agent header based upon the version of the polyfill-library that has been requested.
+  if (req.url.qs !~ &quot;(?i)[^&amp;=]*ua=([^&amp;]+)&quot;) {
+    if (req.url.qs ~ &quot;(?i)[^&amp;=]*version=3\.25\.1(&amp;|$)&quot;) {
+      # normalise_user_agent function is too large for Fastly Fiddle.
+      # call normalise_user_agent;
+    } else {
+      # normalise_user_agent_latest function is too large for Fastly Fiddle.
+      # call normalise_user_agent_latest;
+    }
+    set req.url = querystring.set(req.url, &quot;ua&quot;, req.http.Normalized-User-Agent);
+  }
+
+  # If callback is not set, set to default value &quot;&quot;
+  if (req.url.qs !~ &quot;(?i)[^&amp;=]*callback=([^&amp;]+)&quot;) {
+    set req.url = querystring.filter(req.url, &quot;callback&quot;);
+    set req.url = if(req.url ~ &quot;\?&quot;, req.url &quot;&amp;callback=&quot;, req.url &quot;?callback=&quot;);
+  }
+
+  # If compression is not set, use the best compression that the user-agent supports.
+  if (req.url.qs !~ &quot;(?i)[^&amp;=]*compression=([^&amp;]+)&quot;) {
+    # When Fastly adds Brotli into the Accept-Encoding normalisation we can replace this with:
+    # `set req.url = querystring.set(req.url, &quot;compression&quot;, req.http.Accept-Encoding || &quot;&quot;)`
+
+    # Before SP2, IE/6 doesn't always read and cache gzipped content correctly.
+    if (req.http.Fastly-Orig-Accept-Encoding &amp;&amp; req.http.User-Agent !~ &quot;MSIE 6&quot;) {
+      if (req.http.Fastly-Orig-Accept-Encoding ~ &quot;br&quot;) {
+        set req.url = querystring.set(req.url, &quot;compression&quot;, &quot;br&quot;);
+      } elsif (req.http.Fastly-Orig-Accept-Encoding ~ &quot;gzip&quot;) {
+        set req.url = querystring.set(req.url, &quot;compression&quot;, &quot;gzip&quot;);
+      } else {
+        set req.url = querystring.set(req.url, &quot;compression&quot;, &quot;&quot;);
+      }
+    } else {
+      set req.url = querystring.set(req.url, &quot;compression&quot;, &quot;&quot;);
+    }
+  }
+}
+
+sub sort_comma_separated_value {
+  # This function takes a CSV and tranforms it into a url where each
+  # comma-separated-value is a query-string parameter and then uses
+  # Fastly's querystring.sort function to sort the values. Once sorted
+  # it then turn the query-parameters back into a CSV.
+  # Set the CSV on the header `Sort-Value`.
+  # Returns the sorted CSV on the header `Sorted-Value`.
+  declare local var.value STRING;
+  set var.value = req.http.Sort-value;
+
+  # If query value does not exist or is empty, set it to &quot;&quot;
+  set var.value = if(var.value != &quot;&quot;, var.value, &quot;&quot;);
+
+  # Replace all `&amp;` characters with `^`, this is because `&amp;` would break the value up into pieces.
+  set var.value = regsuball(var.value, &quot;&amp;&quot;, &quot;^&quot;);
+
+  # Replace all `,` characters with `&amp;` to break them into individual query values
+  # Append `1-` infront of all the query values to make them simpler to transform later
+  set var.value = &quot;1-&quot; regsuball(var.value, &quot;,&quot;, &quot;&amp;1-&quot;);
+
+  # Create a querystring-like string in order for querystring.sort to work.
+  set var.value = querystring.sort(&quot;?&quot; var.value);
+
+  # Grab all the query values from the sorted url
+  set var.value = regsub(var.value, &quot;\?&quot;, &quot;&quot;);
+
+  # Reverse all the previous transformations to get back the single `features` query value value
+  set var.value = regsuball(var.value, &quot;1-&quot;, &quot;&quot;);
+  set var.value = regsuball(var.value, &quot;&amp;&quot;, &quot;,&quot;);
+  set var.value = regsuball(var.value, &quot;\^&quot;, &quot;&amp;&quot;);
+
+  set req.http.Sorted-Value = var.value;
+}
+
+sub vcl_recv {
+  # Store original url for logging purposes.
+  declare local var.original-url STRING;
+  set var.original-url = req.url;
+
+  call normalise_querystring_parameters_for_polyfill_bundle;
+  set req.url = querystring.sort(req.url);
+
+  log &quot;Original url: &quot; var.original-url;
+  log &quot;Updated  url: &quot; req.url;
+}
+</code></pre>
+<p>With all these functions in place the end result is that all 6 of those URLs become identical, which means they will have the same hash key inside Varnish Cache and therefore all point to the same single cached response, increasing the cache-hit ratio and decreasing the amount of requests that need to go all the way back to servers for <a href="http://polyfill.io/">polyfill.io</a>.</p>
+<h2 id="normalising-the-user-agent-header-inside-varnish-cache" tabindex="-1">Normalising the User-Agent header inside Varnish Cache</h2>
+<p>It made sense to explain the normalisation of the query paramaters first, but this is actually where we made the biggest step up in the cache-hit ratio. In the previous section I omitted the fact that one of the options in the API is to set the User-Agent in the URL via the <code>ua</code> query parameter. This is a very important feature with regard to caching because it means that we can have a different cached entry for each User-Agent making a request. However it also means that there will be a lot of cache entries and it will make the cache-hit ratio really low. The reason that would happen is because User-Agent values vary <em>a lot</em>. <a href="https://developers.whatismybrowser.com/useragents/explore/">whatismybrowser.com</a> has collected 840,000 unique User-Agents and keeps finding new ones every day.</p>
+<p>Luckily for <a href="http://polyfill.io/">polyfill.io</a> we only care about the User-Agent family, major, and minor version. In <a href="http://polyfill.io/">polyfill.io</a> v1 and v2 we had an API endpoint that would take a User-Agent and return a version of it which only had the family, major, and minor version. This worked very well but introduced some complications in the VCL. Since the API endpoint was implemented in the <a href="http://polyfill.io/">polyfill.io</a> server it meant that a request without a <code>ua</code> query parameter would first need to go to this ua-specific endpoint to find out what its normalised User-Agent value was, and then go to its original destination to return a polyfill bundle.</p>
+<p>In v3 we have implemented this API endpoint as a function in VCL, which has removed the complications around making two requests to the <a href="http://polyfill.io/">polyfill.io</a> server. The way that we parse User-Agents now is by compiling the <a href="https://www.uaparser.org/">uaparser.org</a> into VCL for the <a href="http://polyfill.io/">polyfill.io</a> service and into JS for the <a href="https://github.com/Financial-Times/polyfill-library">polyfill-library</a> npm package.</p>
+<!-- [You can view the code for this at fiddle.fastlydemo.net/fiddle/f857ab79](https://fiddle.fastlydemo.net/fiddle/f857ab79/embedded) -->
+<pre><code class="language-vcl" data-lang="vcl" spellcheck="false" contenteditable="true">sub useragent_parser {
+  declare local var.Family STRING;
+  set var.Family = &quot;Other&quot;;
+  declare local var.Major STRING;
+  set var.Major = &quot;&quot;;
+  declare local var.Minor STRING;
+  set var.Minor = &quot;&quot;;
+  declare local var.Patch STRING;
+  set var.Patch = &quot;&quot;;
+  if (!req.http.User-Agent) {
+  } else if (req.http.User-Agent ~ &quot;(ESPN)[%20| ]+Radio/(\d+)\.(\d+)\.(\d+) CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Antenna)/(\d+) CFNetwork&quot;) {
+    set var.Family = &quot;AntennaPod&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(TopPodcasts)Pro/(\d+) CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MusicDownloader)Lite/(\d+)\.(\d+)\.(\d+) CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(.*)-iPad/(\d+)\.?(\d+)?.?(\d+)?.?(\d+)? CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(.*)-iPhone/(\d+)\.?(\d+)?.?(\d+)?.?(\d+)? CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(.*)/(\d+)\.?(\d+)?.?(\d+)?.?(\d+)? CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(espn\.go)&quot;) {
+    set var.Family = &quot;ESPN&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(espnradio\.com)&quot;) {
+    set var.Family = &quot;ESPN&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;ESPN APP$&quot;) {
+    set var.Family = &quot;ESPN&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(audioboom\.com)&quot;) {
+    set var.Family = &quot;AudioBoom&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot; (Rivo) RHYTHM&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(CFNetwork)(?:/(\d+)\.(\d+)\.?(\d+)?)?&quot;) {
+    set var.Family = &quot;CFNetwork&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pingdom.com_bot_version_)(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;PingdomBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PingdomTMS)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;PingdomBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NewRelicPinger)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;NewRelicPingerBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Tableau)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Tableau&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(\(StatusCake\))&quot;) {
+    set var.Family = &quot;StatusCakeBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(facebookexternalhit)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;FacebookBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Google.*/\+/web/snippet&quot;) {
+    set var.Family = &quot;GooglePlusBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;via ggpht.com GoogleImageProxy&quot;) {
+    set var.Family = &quot;GmailImageProxy&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Twitterbot)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;TwitterBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;/((?:Ant-)?Nutch|[A-z]+[Bb]ot|[A-z]+[Ss]pider|Axtaris|fetchurl|Isara|ShopSalad|Tailsweep)[ \-](\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(008|Altresium|Argus|BaiduMobaider|BoardReader|DNSGroup|DataparkSearch|EDI|Goodzer|Grub|INGRID|Infohelfer|LinkedInBot|LOOQ|Nutch|PathDefender|Peew|PostPost|Steeler|Twitterbot|VSE|WebCrunch|WebZIP|Y!J-BR[A-Z]|YahooSeeker|envolk|sproose|wminer)/(\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MSIE) (\d+)\.(\d+)([a-z]\d?)?;.* MSIECrawler&quot;) {
+    set var.Family = &quot;MSIECrawler&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(DAVdroid)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Google-HTTP-Java-Client|Apache-HttpClient|Go-http-client|scalaj-http|http%20client|Python-urllib|HttpMonitor|TLSProber|WinHTTP|JNLP|okhttp|aihttp|reqwest)(?:[ /](\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pinterest(?:bot)?)/(\d+)(?:\.(\d+)(?:\.(\d+))?)?[;\s\(]+\+https://www.pinterest.com/bot.html&quot;) {
+    set var.Family = &quot;Pinterestbot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(1470\.net crawler|50\.nu|8bo Crawler Bot|Aboundex|Accoona-[A-z]+-Agent|AdsBot-Google(?:-[a-z]+)?|altavista|AppEngine-Google|archive.*?\.org_bot|archiver|Ask Jeeves|[Bb]ai[Dd]u[Ss]pider(?:-[A-Za-z]+)*|bingbot|BingPreview|blitzbot|BlogBridge|Bloglovin|BoardReader(?: [A-Za-z]+)*|boitho.com-dc|BotSeer|BUbiNG|\b\w*favicon\w*\b|\bYeti(?:-[a-z]+)?|Catchpoint(?: bot)?|[Cc]harlotte|Checklinks|clumboot|Comodo HTTP\(S\) Crawler|Comodo-Webinspector-Crawler|ConveraCrawler|CRAWL-E|CrawlConvera|Daumoa(?:-feedfetcher)?|Feed Seeker Bot|Feedbin|findlinks|Flamingo_SearchEngine|FollowSite Bot|furlbot|Genieo|gigabot|GomezAgent|gonzo1|(?:[a-zA-Z]+-)?Googlebot(?:-[a-zA-Z]+)?|Google SketchUp|grub-client|gsa-crawler|heritrix|HiddenMarket|holmes|HooWWWer|htdig|ia_archiver|ICC-Crawler|Icarus6j|ichiro(?:/mobile)?|IconSurf|IlTrovatore(?:-Setaccio)?|InfuzApp|Innovazion Crawler|InternetArchive|IP2[a-z]+Bot|jbot\b|KaloogaBot|Kraken|Kurzor|larbin|LEIA|LesnikBot|Linguee Bot|LinkAider|LinkedInBot|Lite Bot|Llaut|lycos|Mail\.RU_Bot|masscan|masidani_bot|Mediapartners-Google|Microsoft .*? Bot|mogimogi|mozDex|MJ12bot|msnbot(?:-media *)?|msrbot|Mtps Feed Aggregation System|netresearch|Netvibes|NewsGator[^/]*|^NING|Nutch[^/]*|Nymesis|ObjectsSearch|Orbiter|OOZBOT|PagePeeker|PagesInventory|PaxleFramework|Peeplo Screenshot Bot|PlantyNet_WebRobot|Pompos|Qwantify|Read%20Later|Reaper|RedCarpet|Retreiver|Riddler|Rival IQ|scooter|Scrapy|Scrubby|searchsight|seekbot|semanticdiscovery|SemrushBot|Simpy|SimplePie|SEOstats|SimpleRSS|SiteCon|Slackbot-LinkExpanding|Slack-ImgProxy|Slurp|snappy|Speedy Spider|Squrl Java|Stringer|TheUsefulbot|ThumbShotsBot|Thumbshots\.ru|Tiny Tiny RSS|TwitterBot|WhatsApp|URL2PNG|Vagabondo|VoilaBot|^vortex|Votay bot|^voyager|WASALive.Bot|Web-sniffer|WebThumb|WeSEE:[A-z]+|WhatWeb|WIRE|WordPress|Wotbox|www\.almaden\.ibm\.com|Xenu(?:.s)? Link Sleuth|Xerka [A-z]+Bot|yacy(?:bot)?|Yahoo[a-z]*Seeker|Yahoo! Slurp|Yandex\w+|YodaoBot(?:-[A-z]+)?|YottaaMonitor|Yowedo|^Zao|^Zao-Crawler|ZeBot_www\.ze\.bz|ZooShot|ZyBorg)(?:[ /]v?(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(Boto3?|JetS3t|aws-(?:cli|sdk-(?:cpp|go|java|nodejs|ruby2?))|s3fs)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:\/[A-Za-z0-9\.]+)? *([A-Za-z0-9 \-_\!\[\]:]*(?:[Aa]rchiver|[Ii]ndexer|[Ss]craper|[Bb]ot|[Ss]pider|[Cc]rawl[a-z]*))/(\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:\/[A-Za-z0-9\.]+)? *([A-Za-z0-9 _\!\[\]:]*(?:[Aa]rchiver|[Ii]ndexer|[Ss]craper|[Bb]ot|[Ss]pider|[Cc]rawl[a-z]*)) (\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;((?:[A-z0-9]+|[A-z\-]+ ?)?(?: the )?(?:[Ss][Pp][Ii][Dd][Ee][Rr]|[Ss]crape|[A-Za-z0-9-]*(?:[^C][^Uu])[Bb]ot|[Cc][Rr][Aa][Ww][Ll])[A-z0-9]*)(?:(?:[ /]| v)(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(HbbTV)/(\d+)\.(\d+)\.(\d+) \(&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chimera|SeaMonkey|Camino|Waterfox)/(\d+)\.(\d+)\.?([ab]?\d+[a-z]*)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\[FB.*;(FBAV)/(\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = &quot;Facebook&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\[(Pinterest)/[^\]]+\]&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pinterest)(?: for Android(?: Tablet)?)?/(\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Mozilla.*Mobile.*(Instagram).(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Mozilla.*Mobile.*(Flipboard).(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Mozilla.*Mobile.*(Flipboard-Briefing).(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Mozilla.*Mobile.*(Onefootball)\/Android.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+) Basilisk/(\d+)&quot;) {
+    set var.Family = &quot;Basilisk&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PaleMoon)/(\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = &quot;Pale Moon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Fennec)/(\d+)\.(\d+)\.?([ab]?\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Fennec)/(\d+)\.(\d+)(pre)&quot;) {
+    set var.Family = &quot;Firefox Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Fennec)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Firefox Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:Mobile|Tablet);.*(Firefox)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Firefox Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Namoroka|Shiretoko|Minefield)/(\d+)\.(\d+)\.(\d+(?:pre)?)&quot;) {
+    set var.Family = &quot;Firefox (&quot; re.group.1 &quot;)&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)(a\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Alpha&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)(b\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Beta&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)-(?:\d+\.\d+)?/(\d+)\.(\d+)(a\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Alpha&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)-(?:\d+\.\d+)?/(\d+)\.(\d+)(b\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Beta&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Namoroka|Shiretoko|Minefield)/(\d+)\.(\d+)([ab]\d+[a-z]*)?&quot;) {
+    set var.Family = &quot;Firefox (&quot; re.group.1 &quot;)&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox).*Tablet browser (\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;MicroB&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MozillaDeveloperPreview)/(\d+)\.(\d+)([ab]\d+[a-z]*)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(FxiOS)/(\d+)\.(\d+)(\.(\d+))?(\.(\d+))?&quot;) {
+    set var.Family = &quot;Firefox iOS&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Flock)/(\d+)\.(\d+)(b\d+?)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(RockMelt)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Navigator)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Netscape&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Navigator)/(\d+)\.(\d+)([ab]\d+)&quot;) {
+    set var.Family = &quot;Netscape&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Netscape6)/(\d+)\.(\d+)\.?([ab]?\d+)?&quot;) {
+    set var.Family = &quot;Netscape&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MyIBrow)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;My Internet Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(UC? ?Browser|UCWEB|U3)[ /]?(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;UC Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera Tablet).*Version/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera Mini)(?:/att)?/?(\d+)?(?:\.(\d+))?(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera)/.+Opera Mobi.+Version/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera)/(\d+)\.(\d+).+Opera Mobi&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Opera Mobi.+(Opera)(?:/|\s+)(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Opera Mobi&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera)/9.80.*Version/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:Mobile Safari).*(OPR)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:Chrome).*(OPR)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Opera&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Coast)/(\d+).(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Opera Coast&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OPiOS)/(\d+).(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Opera Mini&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Chrome/.+( MMS)/(\d+).(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Opera Neon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(hpw|web)OS/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;webOS Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(luakit)&quot;) {
+    set var.Family = &quot;LuaKit&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Snowshoe)/(\d+)\.(\d+).(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Gecko/\d+ (Lightning)/(\d+)\.(\d+)\.?((?:[ab]?\d+[a-z]*)|(?:\d*))&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)\.(\d+(?:pre)?) \(Swiftfox\)&quot;) {
+    set var.Family = &quot;Swiftfox&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)([ab]\d+[a-z]*)? \(Swiftfox\)&quot;) {
+    set var.Family = &quot;Swiftfox&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(rekonq)/(\d+)\.(\d+)\.?(\d+)? Safari&quot;) {
+    set var.Family = &quot;Rekonq&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;rekonq&quot;) {
+    set var.Family = &quot;Rekonq&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(conkeror|Conkeror)/(\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = &quot;Conkeror&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(konqueror)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Konqueror&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(WeTab)-Browser&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Comodo_Dragon)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Comodo Dragon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Symphony) (\d+).(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;PLAYSTATION 3.+WebKit&quot;) {
+    set var.Family = &quot;NetFront NX&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;PLAYSTATION 3&quot;) {
+    set var.Family = &quot;NetFront&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PlayStation Portable)&quot;) {
+    set var.Family = &quot;NetFront&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PlayStation Vita)&quot;) {
+    set var.Family = &quot;NetFront NX&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;AppleWebKit.+ (NX)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;NetFront NX&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Nintendo 3DS)&quot;) {
+    set var.Family = &quot;NetFront NX&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Silk)/(\d+)\.(\d+)(?:\.([0-9\-]+))?&quot;) {
+    set var.Family = &quot;Amazon Silk&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Puffin)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Windows Phone .*(Edge)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Edge Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SamsungBrowser)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Samsung Internet&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SznProhlizec)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Seznam prohl%u00ED%u017Ee%u010D&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(coc_coc_browser)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Coc Coc&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(baidubrowser)[/\s](\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = &quot;Baidu Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(FlyFlow)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Baidu Explorer&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MxBrowser)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Maxthon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Crosswalk)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;; wv\).+(Chrome)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Mobile WebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(CrMo)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(CriOS)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Mobile iOS&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chrome)/(\d+)\.(\d+)\.(\d+)\.(\d+) Mobile(?:[ /]|$)&quot;) {
+    set var.Family = &quot;Chrome Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot; Mobile .*(Chrome)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(chromeframe)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Frame&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SLP Browser)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Tizen Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SE 2\.X) MetaSr (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Sogou Explorer&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MQQBrowser/Mini)(?:(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = &quot;QQ Browser Mini&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MQQBrowser)(?:/(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = &quot;QQ Browser Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(QQBrowser)(?:/(\d+)(?:\.(\d+)\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = &quot;QQ Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Rackspace Monitoring)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;RackspaceBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PyAMF)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(YaBrowser)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Yandex Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chrome)/(\d+)\.(\d+)\.(\d+).* MRCHROME&quot;) {
+    set var.Family = &quot;Mail.ru Chromium Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(AOL) (\d+)\.(\d+); AOLBuild (\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PodCruncher|Downcast)[ /]?(\d+)\.?(\d+)?\.?(\d+)?\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot; (BoxNotes)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Slack_SSB)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Slack Desktop Client&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(HipChat)/?(\d+)?&quot;) {
+    set var.Family = &quot;HipChat Desktop Client&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(MobileIron|FireWeb|Jasmine|ANTGalio|Midori|Fresco|Lobo|PaleMoon|Maxthon|Lynx|OmniWeb|Dillo|Camino|Demeter|Fluid|Fennec|Epiphany|Shiira|Sunrise|Spotify|Flock|Netscape|Lunascape|WebPilot|NetFront|Netfront|Konqueror|SeaMonkey|Kazehakase|Vienna|Iceape|Iceweasel|IceWeasel|Iron|K-Meleon|Sleipnir|Galeon|GranParadiso|Opera Mini|iCab|NetNewsWire|ThunderBrowse|Iris|UP\.Browser|Bunjalloo|Google Earth|Raven for Mac|Openwave|MacOutlook|Electron|OktaMobile)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Microsoft Office Outlook 12\.\d+\.\d+|MSOffice 12&quot;) {
+    set var.Family = &quot;Outlook&quot;;
+    set var.Major = &quot;2007&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Microsoft Outlook 14\.\d+\.\d+|MSOffice 14&quot;) {
+    set var.Family = &quot;Outlook&quot;;
+    set var.Major = &quot;2010&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Microsoft Outlook 15\.\d+\.\d+&quot;) {
+    set var.Family = &quot;Outlook&quot;;
+    set var.Major = &quot;2013&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Microsoft Outlook (?:Mail )?16\.\d+\.\d+&quot;) {
+    set var.Family = &quot;Outlook&quot;;
+    set var.Major = &quot;2016&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Outlook-Express\/7\.0.*&quot;) {
+    set var.Family = &quot;Windows Live Mail&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Airmail) (\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Thunderbird)/(\d+)\.(\d+)(?:\.(\d+(?:pre)?))?&quot;) {
+    set var.Family = &quot;Thunderbird&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Postbox)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Postbox&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Barca(?:Pro)?)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Barca&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Lotus-Notes)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Lotus Notes&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Vivaldi)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Edge)/(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(brave)/(\d+)\.(\d+)\.(\d+) Chrome&quot;) {
+    set var.Family = &quot;Brave&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chrome)/(\d+)\.(\d+)\.(\d+)[\d.]* Iron[^/]&quot;) {
+    set var.Family = &quot;Iron&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(Dolphin)(?: |HDCN/|/INT\-)(\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(HeadlessChrome)(?:/(\d+)\.(\d+)\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Evolution)/(\d+)\.(\d+)\.(\d+\.\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(RCM CardDAV plugin)/(\d+)\.(\d+)\.(\d+(?:-dev)?)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(bingbot|Bolt|AdobeAIR|Jasmine|IceCat|Skyfire|Midori|Maxthon|Lynx|Arora|IBrowse|Dillo|Camino|Shiira|Fennec|Phoenix|Flock|Netscape|Lunascape|Epiphany|WebPilot|Opera Mini|Opera|NetFront|Netfront|Konqueror|Googlebot|SeaMonkey|Kazehakase|Vienna|Iceape|Iceweasel|IceWeasel|Iron|K-Meleon|Sleipnir|Galeon|GranParadiso|iCab|iTunes|MacAppStore|NetNewsWire|Space Bison|Stainless|Orca|Dolfin|BOLT|Minimo|Tizen Browser|Polaris|Abrowser|Planetweb|ICE Browser|mDolphin|qutebrowser|Otter|QupZilla|MailBar|kmail2|YahooMobileMail|ExchangeWebServices|ExchangeServicesClient|Dragon|Outlook-iOS-Android)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chromium|Chrome)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(IEMobile)[ /](\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;IE Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(BacaBerita App)\/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(bPod|Pocket Casts|Player FM)$&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(AlexaMediaPlayer|VLC)/(\d+)\.(\d+)\.([^.\s]+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(AntennaPod|WMPlayer|Zune|Podkicker|Radio|ExoPlayerDemo|Overcast|PocketTunes|NSPlayer|okhttp|DoggCatcher|QuickNews|QuickTime|Peapod|Podcasts|GoldenPod|VLC|Spotify|Miro|MediaGo|Juice|iPodder|gPodder|Banshee)/(\d+)\.(\d+)\.?(\d+)?\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Peapod|Liferea)/([^.\s]+)\.([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(bPod|Player FM) BMID/(\S+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Podcast ?Addict)/v(\d+) &quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Podcast ?Addict) &quot;) {
+    set var.Family = &quot;PodcastAddict&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Replay) AV&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(VOX) Music Player&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(CITA) RSS Aggregator/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pocket Casts)$&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Player FM)$&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(LG Player|Doppler|FancyMusic|MediaMonkey|Clementine) (\d+)\.(\d+)\.?([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(philpodder)/(\d+)\.(\d+)\.?([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Player FM|Pocket Casts|DoggCatcher|Spotify|MediaMonkey|MediaGo|BashPodder)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(QuickTime)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Kinoma)(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Fancy) Cloud Music (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;FancyMusic&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;EspnDownloadManager&quot;) {
+    set var.Family = &quot;ESPN&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ESPN) Radio (\d+)\.(\d+)\.?(\d+)? ?(?:rv:(\d+))? &quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(podracer|jPodder) v ?(\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ZDM)/(\d+)\.(\d+)[; ]?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Zune|BeyondPod) (\d+)\.?(\d+)?[\);]&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(WMPlayer)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Lavf)&quot;) {
+    set var.Family = &quot;WMPlayer&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(RSSRadio)[ /]?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(RSS_Radio) (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;RSSRadio&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Podkicker) \S+/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Podkicker&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(HTC) Streaming Player \S+ / \S+ / \S+ / (\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Stitcher)/iOS&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Stitcher)/Android&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(VLC) .*version (\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot; (VLC) for&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(vlc)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;VLC&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(foobar)\S+/([^.\s]+)\.([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Clementine)\S+ ([^.\s]+)\.([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(amarok)/([^.\s]+)\.([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = &quot;Amarok&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Custom)-Feed Reader&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iRider|Crazy Browser|SkipStone|iCab|Lunascape|Sleipnir|Maemo Browser) (\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iCab|Lunascape|Opera|Android|Jasmine|Polaris|Microsoft SkyDriveSync|The Bat!) (\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Kindle)/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Donut&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;1&quot;;
+    set var.Minor=&quot;2&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Eclair&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;2&quot;;
+    set var.Minor=&quot;1&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Froyo&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;2&quot;;
+    set var.Minor=&quot;2&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Gingerbread&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;2&quot;;
+    set var.Minor=&quot;3&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Honeycomb&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;3&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MSIE) (\d+)\.(\d+).*XBLWP7&quot;) {
+    set var.Family = &quot;IE Large Screen&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Nextcloud)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(mirall)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ownCloud-android)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Owncloud&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Obigo)InternetBrowser&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Obigo)\-Browser&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Obigo|OBIGO)[^\d]*(\d+)(?:.(\d+))?&quot;) {
+    set var.Family = &quot;Obigo&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MAXTHON|Maxthon) (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Maxthon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Maxthon|MyIE2|Uzbl|Shiira)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;0&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(BrowseX) \((\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NCSA_Mosaic)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;NCSA Mosaic&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(POLARIS)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Polaris&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Embider)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Polaris&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(BonEcho)/(\d+)\.(\d+)\.?([ab]?\d+)?&quot;) {
+    set var.Family = &quot;Bon Echo&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPhone|iPad).+Version/(\d+)\.(\d+)(?:\.(\d+))?.*[ +]Safari&quot;) {
+    set var.Family = &quot;Mobile Safari&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPod touch|iPhone|iPad);.*CPU.*OS[ +](\d+)_(\d+)(?:_(\d+))?.* AppleNews\/\d+\.\d+\.\d+?&quot;) {
+    set var.Family = &quot;Mobile Safari UI/WKWebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPhone|iPad).+Version/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Mobile Safari UI/WKWebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPod touch|iPhone|iPad);.*CPU.*OS[ +](\d+)_(\d+)(?:_(\d+))?.*Mobile.*[ +]Safari&quot;) {
+    set var.Family = &quot;Mobile Safari&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPod touch|iPhone|iPad);.*CPU.*OS[ +](\d+)_(\d+)(?:_(\d+))?.*Mobile&quot;) {
+    set var.Family = &quot;Mobile Safari UI/WKWebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPhone|iPad).* Safari&quot;) {
+    set var.Family = &quot;Mobile Safari&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPhone|iPad)&quot;) {
+    set var.Family = &quot;Mobile Safari UI/WKWebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Outlook-iOS)/\d+\.\d+\.prod\.iphone \((\d+)\.(\d+)\.(\d+)\)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(AvantGo) (\d+).(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OneBrowser)/(\d+).(\d+)&quot;) {
+    set var.Family = &quot;ONE Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Avant)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;1&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(QtCarBrowser)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;1&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(iBrowser/Mini)(\d+).(\d+)&quot;) {
+    set var.Family = &quot;iBrowser Mini&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(iBrowser|iRAPP)/(\d+).(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Nokia)&quot;) {
+    set var.Family = &quot;Nokia Services (WAP) Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NokiaBrowser)/(\d+)\.(\d+).(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NokiaBrowser)/(\d+)\.(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NokiaBrowser)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(BrowserNG)/(\d+)\.(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Series60)/5\.0&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = &quot;7&quot;;
+    set var.Minor=&quot;0&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Series60)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Nokia OSS Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(S40OviBrowser)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Ovi Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Nokia)[EN]?(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PlayBook).+RIM Tablet OS (\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;BlackBerry WebKit&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Black[bB]erry|BB10).+Version/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;BlackBerry WebKit&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Black[bB]erry)\s?(\d+)&quot;) {
+    set var.Family = &quot;BlackBerry&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OmniWeb)/v(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Blazer)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Palm Blazer&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pre)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Palm Pre&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ELinks)/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ELinks) \((\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Links) \((\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(QtWeb) Internet Browser/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PhantomJS)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(AppleWebKit)/(\d+)\.?(\d+)?\+ .* Safari&quot;) {
+    set var.Family = &quot;WebKit Nightly&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Version)/(\d+)\.(\d+)(?:\.(\d+))?.*Safari/&quot;) {
+    set var.Family = &quot;Safari&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Safari)/\d+&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OLPC)/Update(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OLPC)/Update()\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;0&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SEMC\-Browser)/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Teleca)&quot;) {
+    set var.Family = &quot;Teleca Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Phantom)/V(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Phantom Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Trident)/(7|8)\.(0)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = &quot;11&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Trident)/(6)\.(0)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = &quot;10&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Trident)/(5)\.(0)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = &quot;9&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Trident)/(4)\.(0)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = &quot;8&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Espial)/(\d+)(?:\.(\d+))?(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(AppleWebKit)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Apple Mail&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)(pre|[ab]\d+[a-z]*)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;([MS]?IE) (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(python-requests)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Python Requests&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(Windows-Update-Agent|Microsoft-CryptoAPI|SophosUpdateManager|SophosAgent|Debian APT-HTTP|Ubuntu APT-HTTP|libcurl-agent|libwww-perl|urlgrabber|curl|PycURL|Wget|aria2|Axel|OpenBSD ftp|lftp|jupdate)(?:[ /](\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Java)[/ ]{0,1}\d+\.(\d+)\.(\d+)[_-]*([a-zA-Z0-9]+)*&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Cyberduck)/(\d+)\.(\d+)\.(\d+)(?:\.\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(S3 Browser) (\d+)-(\d+)-(\d+)(?:\s*http://s3browser\.com)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(rclone)/v(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Roku)/DVP-(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Kurio)\/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Kurio App&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Box(?: Sync)?)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  }
+  set req.http.useragent_parser_family=var.Family;
+  set req.http.useragent_parser_major=var.Major;
+  set req.http.useragent_parser_minor=var.Minor;
+  set req.http.useragent_parser_patch=var.Patch;
+}
+
+sub vcl_recv {
+  # Store original url for logging purposes.
+  declare local var.original-url STRING;
+  set var.original-url = req.url;
+
+  call useragent_parser;
+
+  log &quot;Family: &quot; req.http.useragent_parser_family;
+  log &quot;Major: &quot; req.http.useragent_parser_major;
+  log &quot;Minor: &quot; req.http.useragent_parser_minor;
+  log &quot;Patch: &quot; req.http.useragent_parser_patch;
+
+  declare local var.ua STRING;
+  set var.ua = req.http.useragent_parser_family &quot;/&quot; req.http.useragent_parser_major &quot;.&quot; req.http.useragent_parser_minor &quot;.&quot; req.http.useragent_parser_patch;
+  set req.url = querystring.set(req.url, &quot;ua&quot;, var.ua);
+
+  log &quot;Original url: &quot; var.original-url;
+  log &quot;Updated  url: &quot; req.url;
+}
+</code></pre>
+<p>Normalising the User-Agent helps reduce the millions of different User-Agents down to the thousands of User-Agents that <a href="https://www.uaparser.org/">uaparser.org</a> detects them as. We can still improve on this - currently <a href="http://polyfill.io/">polyfill.io</a> supports 15 User-Agent families: Android, BlackBerry, Chrome, Edge, Edge Mobile, Firefox, Firefox Mobile, Internet Explorer, Internet Explorer Mobile, iOS Safari, iOS Chrome, Opera, Opera Mini, Opera Mobile and Samsung. If we detect that the User-Agent family is one we do not support, we can give it a generic unsupported name, such as <code>other</code> to ensure that all unsupported User-Agents generate the same internal URL and point to the same cached object.</p>
+<!-- [You can view the code for this at fiddle.fastlydemo.net/fiddle/6a4eb0a1](https://fiddle.fastlydemo.net/fiddle/6a4eb0a1/embedded) -->
+<pre><code class="language-vcl" data-lang="vcl" spellcheck="false" contenteditable="true">sub normalise_user_agent_latest {
+  if (req.http.User-Agent) {
+    # Longest genuine UA seen so far: 255 chars (Facebook in-app on iOS):
+    set req.http.User-Agent = if(req.http.User-Agent ~ &quot;(^[\s\S]{0,300})&quot;, re.group.1, &quot;other/0.0.0&quot;);
+
+    # Remove UA tokens that unnecessarily complicate UA parsing
+
+    # Chrome and Opera on iOS uses a UIWebView of the underlying platform to render
+    # content. By stripping the CriOS or OPiOS strings, the useragent parser will alias the
+    # user agent to ios_saf for the UIWebView, which is closer to the actual renderer
+    set req.http.User-Agent = regsub(req.http.User-Agent, &quot;((CriOS|OPiOS)/(\d+)\.(\d+)\.(\d+)\.(\d+)|(FxiOS/(\d+)\.(\d+)))&quot;, &quot;&quot;);
+
+    # # Vivaldi browser is recognised by UA module but is actually identical to Chrome, so
+    # # the best way to get accurate targeting is to remove the vivaldi token from the UA
+    set req.http.User-Agent = regsub(req.http.User-Agent, &quot;(?i) vivaldi/[\d\.]+\d+&quot;, &quot;&quot;);
+
+    # # Facebook in-app browser `[FBAN/.....]` or `[FB_IAB/.....]` (see #990)
+    set req.http.User-Agent = regsub(req.http.User-Agent, &quot;(?i) \[(FB_IAB|FBAN|FBIOS|FB4A)/[^\]]+\]&quot;, &quot;&quot;);
+
+    # # Electron ` Electron/X.Y.Z` (see #1129)
+    set req.http.User-Agent = regsub(req.http.User-Agent, &quot;(?i) Electron/[\d\.]+\d+&quot;, &quot;&quot;);
+
+    call useragent_parser;
+
+    # Clone the original values for later modification. This helps when debugging as it let's us see what the useragent_parser function returned.
+    set req.http.normalized_user_agent_family = req.http.useragent_parser_family;
+    set req.http.normalized_user_agent_major_version = req.http.useragent_parser_major;
+    set req.http.normalized_user_agent_minor_version = req.http.useragent_parser_minor;
+    set req.http.normalized_user_agent_patch_version = req.http.useragent_parser_patch;
+
+    set req.http.normalized_user_agent_patch_version = &quot;0&quot;;
+    set req.http.normalized_user_agent_family = std.tolower(req.http.useragent_parser_family);
+
+    # Aliases
+    if (req.http.normalized_user_agent_family == &quot;blackberry webkit&quot;) {
+      set req.http.normalized_user_agent_family = &quot;bb&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;blackberry&quot;) {
+      set req.http.normalized_user_agent_family = &quot;bb&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;pale moon (firefox variant)&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;pale moon&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;firefox mobile&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox_mob&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;firefox namoroka&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;firefox shiretoko&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;firefox minefield&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;firefox alpha&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;firefox beta&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;microb&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;mozilladeveloperpreview&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;iceweasel&quot;) {
+      set req.http.normalized_user_agent_family = &quot;firefox&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;opera tablet&quot;) {
+      set req.http.normalized_user_agent_family = &quot;opera&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;opera mobile&quot;) {
+      set req.http.normalized_user_agent_family = &quot;op_mob&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;opera mini&quot;) {
+      set req.http.normalized_user_agent_family = &quot;op_mini&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;chrome mobile&quot;) {
+      set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;chrome frame&quot;) {
+      set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;chromium&quot;) {
+      set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;ie mobile&quot;) {
+      set req.http.normalized_user_agent_family = &quot;ie_mob&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;ie large screen&quot;) {
+      set req.http.normalized_user_agent_family = &quot;ie&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;internet explorer&quot;) {
+      set req.http.normalized_user_agent_family = &quot;ie&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;edge mobile&quot;) {
+      set req.http.normalized_user_agent_family = &quot;edge_mob&quot;;
+    }
+    if (req.http.normalized_user_agent_family == &quot;uc browser&quot;) {
+      if (req.http.normalized_user_agent_major_version == &quot;9&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;9&quot;) {
+        set req.http.normalized_user_agent_family = &quot;ie&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;10&quot;;
+      }
+    }
+    if (req.http.normalized_user_agent_family == &quot;chrome mobile ios&quot;) {
+        set req.http.normalized_user_agent_family = &quot;ios_chr&quot;;
+      }
+
+    if (req.http.normalized_user_agent_family == &quot;mobile safari&quot;) {
+        set req.http.normalized_user_agent_family = &quot;ios_saf&quot;;
+      }
+    if (req.http.normalized_user_agent_family == &quot;iphone&quot;) {
+        set req.http.normalized_user_agent_family = &quot;ios_saf&quot;;
+      }
+    if (req.http.normalized_user_agent_family == &quot;iphone simulator&quot;) {
+        set req.http.normalized_user_agent_family = &quot;ios_saf&quot;;
+      }
+    if (req.http.normalized_user_agent_family == &quot;mobile safari uiwebview&quot;) {
+        set req.http.normalized_user_agent_family = &quot;ios_saf&quot;;
+      }
+    if (req.http.normalized_user_agent_family == &quot;mobile safari ui/wkwebview&quot;) {
+        set req.http.normalized_user_agent_family = &quot;ios_saf&quot;;
+      }
+
+    if (req.http.normalized_user_agent_family == &quot;samsung internet&quot;) {
+        set req.http.normalized_user_agent_family = &quot;samsung_mob&quot;;
+      }
+
+    if (req.http.normalized_user_agent_family == &quot;phantomjs&quot;) {
+        set req.http.normalized_user_agent_family = &quot;safari&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;5&quot;;
+      }
+
+    if (req.http.normalized_user_agent_family == &quot;yandex browser&quot;) {
+      if (req.http.normalized_user_agent_major_version == &quot;14&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;10&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;37&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;14&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;10&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;36&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;14&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;10&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;35&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;14&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;10&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;34&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;14&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;10&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;33&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;14&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;10&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;32&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;14&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;10&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;30&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;14&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;10&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;28&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;14&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;10&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;60&quot;;
+      }
+    }
+
+    if (req.http.normalized_user_agent_family == &quot;opera&quot;) {
+      if (req.http.normalized_user_agent_major_version == &quot;20&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;33&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;21&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;34&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;22&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;35&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;23&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;36&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;24&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;37&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;25&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;38&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;26&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;39&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;27&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;40&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;28&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;41&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;29&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;42&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;30&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;43&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;31&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;44&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;32&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;45&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;33&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;46&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;34&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;47&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;35&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;48&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;36&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;49&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;37&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;50&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;38&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;51&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;39&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;52&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;40&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;53&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;41&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;54&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;42&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;55&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;43&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;56&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;44&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;57&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;45&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;58&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;46&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;59&quot;;
+      }
+      if (req.http.normalized_user_agent_major_version == &quot;47&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;60&quot;;
+      }
+    }
+
+    if (req.http.normalized_user_agent_family == &quot;googlebot&quot;) {
+      if (req.http.normalized_user_agent_major_version == &quot;2&quot; &amp;&amp; req.http.normalized_user_agent_minor_version == &quot;1&quot;) {
+        set req.http.normalized_user_agent_family = &quot;chrome&quot;;
+        set req.http.normalized_user_agent_major_version = &quot;41&quot;;
+      }
+    }
+
+    # Supported Browsers and minimum supported versions.
+    if (
+      # &quot;edge&quot;: &quot;*&quot;,
+      (req.http.normalized_user_agent_family == &quot;edge&quot;) ||
+      # &quot;edge_mob&quot;: &quot;*&quot;,
+      (req.http.normalized_user_agent_family == &quot;edge_mob&quot;) ||
+      # &quot;ie&quot;: &quot;&gt;=8&quot;,
+      (req.http.normalized_user_agent_family == &quot;ie&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 8) ||
+      # &quot;ie_mob&quot;: &quot;&gt;=11&quot;,
+      (req.http.normalized_user_agent_family == &quot;ie_mob&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 11) ||
+      # &quot;chrome&quot;: &quot;&gt;=29&quot;,
+      (req.http.normalized_user_agent_family == &quot;chrome&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 29) ||
+      # &quot;safari&quot;: &quot;&gt;=9&quot;,
+      (req.http.normalized_user_agent_family == &quot;safari&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 9) ||
+      # &quot;ios_saf&quot;: &quot;&gt;=9&quot;,
+      (req.http.normalized_user_agent_family == &quot;ios_saf&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 9) ||
+      # &quot;ios_chr&quot;: &quot;&gt;=9&quot;,
+      (req.http.normalized_user_agent_family == &quot;ios_chr&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 9) ||
+      # &quot;firefox&quot;: &quot;&gt;=38&quot;,
+      (req.http.normalized_user_agent_family == &quot;firefox&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 38) ||
+      # &quot;firefox_mob&quot;: &quot;&gt;=38&quot;,
+      (req.http.normalized_user_agent_family == &quot;firefox_mob&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 38) ||
+      # &quot;android&quot;: &quot;&gt;=4.3&quot;,
+      (req.http.normalized_user_agent_family == &quot;android&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 5) ||
+      (req.http.normalized_user_agent_family == &quot;android&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) == 4 &amp;&amp; std.atoi(req.http.normalized_user_agent_minor_version) &gt;= 3) ||
+      # &quot;opera&quot;: &quot;&gt;=33&quot;,
+      (req.http.normalized_user_agent_family == &quot;opera&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 33) ||
+      # &quot;op_mob&quot;: &quot;&gt;=10&quot;,
+      (req.http.normalized_user_agent_family == &quot;op_mob&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 10) ||
+      # &quot;op_mini&quot;: &quot;&gt;=5&quot;,
+      (req.http.normalized_user_agent_family == &quot;op_mini&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 5) ||
+      # &quot;bb&quot;: &quot;&gt;=6&quot;,
+      (req.http.normalized_user_agent_family == &quot;bb&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 6) ||
+      # &quot;samsung_mob&quot;: &quot;&gt;=4&quot;
+      (req.http.normalized_user_agent_family == &quot;samsung_mob&quot; &amp;&amp; std.atoi(req.http.normalized_user_agent_major_version) &gt;= 4)
+    ) {
+      set req.http.Normalized-User-Agent = req.http.normalized_user_agent_family &quot;/&quot;  req.http.normalized_user_agent_major_version &quot;.&quot; req.http.normalized_user_agent_minor_version &quot;.&quot; req.http.normalized_user_agent_patch_version;
+    } else {
+      set req.http.normalized_user_agent_family = &quot;other&quot;;
+      set req.http.normalized_user_agent_major_version = &quot;0&quot;;
+      set req.http.normalized_user_agent_minor_version = &quot;0&quot;;
+      set req.http.Normalized-User-Agent = req.http.normalized_user_agent_family &quot;/&quot;  req.http.normalized_user_agent_major_version &quot;.&quot; req.http.normalized_user_agent_minor_version &quot;.&quot; req.http.normalized_user_agent_patch_version;
+    }
+  } else {
+    set req.http.Normalized-User-Agent = &quot;other/0.0.0&quot;;
+  }
+}
+
+sub useragent_parser {
+  declare local var.Family STRING;
+  set var.Family = &quot;Other&quot;;
+  declare local var.Major STRING;
+  set var.Major = &quot;&quot;;
+  declare local var.Minor STRING;
+  set var.Minor = &quot;&quot;;
+  declare local var.Patch STRING;
+  set var.Patch = &quot;&quot;;
+  if (!req.http.User-Agent) {
+  } else if (req.http.User-Agent ~ &quot;(ESPN)[%20| ]+Radio/(\d+)\.(\d+)\.(\d+) CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Antenna)/(\d+) CFNetwork&quot;) {
+    set var.Family = &quot;AntennaPod&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(TopPodcasts)Pro/(\d+) CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MusicDownloader)Lite/(\d+)\.(\d+)\.(\d+) CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(.*)-iPad/(\d+)\.?(\d+)?.?(\d+)?.?(\d+)? CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(.*)-iPhone/(\d+)\.?(\d+)?.?(\d+)?.?(\d+)? CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(.*)/(\d+)\.?(\d+)?.?(\d+)?.?(\d+)? CFNetwork&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(espn\.go)&quot;) {
+    set var.Family = &quot;ESPN&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(espnradio\.com)&quot;) {
+    set var.Family = &quot;ESPN&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;ESPN APP$&quot;) {
+    set var.Family = &quot;ESPN&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(audioboom\.com)&quot;) {
+    set var.Family = &quot;AudioBoom&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot; (Rivo) RHYTHM&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(CFNetwork)(?:/(\d+)\.(\d+)\.?(\d+)?)?&quot;) {
+    set var.Family = &quot;CFNetwork&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pingdom.com_bot_version_)(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;PingdomBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PingdomTMS)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;PingdomBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NewRelicPinger)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;NewRelicPingerBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Tableau)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Tableau&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(\(StatusCake\))&quot;) {
+    set var.Family = &quot;StatusCakeBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(facebookexternalhit)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;FacebookBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Google.*/\+/web/snippet&quot;) {
+    set var.Family = &quot;GooglePlusBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;via ggpht.com GoogleImageProxy&quot;) {
+    set var.Family = &quot;GmailImageProxy&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Twitterbot)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;TwitterBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;/((?:Ant-)?Nutch|[A-z]+[Bb]ot|[A-z]+[Ss]pider|Axtaris|fetchurl|Isara|ShopSalad|Tailsweep)[ \-](\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(008|Altresium|Argus|BaiduMobaider|BoardReader|DNSGroup|DataparkSearch|EDI|Goodzer|Grub|INGRID|Infohelfer|LinkedInBot|LOOQ|Nutch|PathDefender|Peew|PostPost|Steeler|Twitterbot|VSE|WebCrunch|WebZIP|Y!J-BR[A-Z]|YahooSeeker|envolk|sproose|wminer)/(\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MSIE) (\d+)\.(\d+)([a-z]\d?)?;.* MSIECrawler&quot;) {
+    set var.Family = &quot;MSIECrawler&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(DAVdroid)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Google-HTTP-Java-Client|Apache-HttpClient|Go-http-client|scalaj-http|http%20client|Python-urllib|HttpMonitor|TLSProber|WinHTTP|JNLP|okhttp|aihttp|reqwest)(?:[ /](\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pinterest(?:bot)?)/(\d+)(?:\.(\d+)(?:\.(\d+))?)?[;\s\(]+\+https://www.pinterest.com/bot.html&quot;) {
+    set var.Family = &quot;Pinterestbot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(1470\.net crawler|50\.nu|8bo Crawler Bot|Aboundex|Accoona-[A-z]+-Agent|AdsBot-Google(?:-[a-z]+)?|altavista|AppEngine-Google|archive.*?\.org_bot|archiver|Ask Jeeves|[Bb]ai[Dd]u[Ss]pider(?:-[A-Za-z]+)*|bingbot|BingPreview|blitzbot|BlogBridge|Bloglovin|BoardReader(?: [A-Za-z]+)*|boitho.com-dc|BotSeer|BUbiNG|\b\w*favicon\w*\b|\bYeti(?:-[a-z]+)?|Catchpoint(?: bot)?|[Cc]harlotte|Checklinks|clumboot|Comodo HTTP\(S\) Crawler|Comodo-Webinspector-Crawler|ConveraCrawler|CRAWL-E|CrawlConvera|Daumoa(?:-feedfetcher)?|Feed Seeker Bot|Feedbin|findlinks|Flamingo_SearchEngine|FollowSite Bot|furlbot|Genieo|gigabot|GomezAgent|gonzo1|(?:[a-zA-Z]+-)?Googlebot(?:-[a-zA-Z]+)?|Google SketchUp|grub-client|gsa-crawler|heritrix|HiddenMarket|holmes|HooWWWer|htdig|ia_archiver|ICC-Crawler|Icarus6j|ichiro(?:/mobile)?|IconSurf|IlTrovatore(?:-Setaccio)?|InfuzApp|Innovazion Crawler|InternetArchive|IP2[a-z]+Bot|jbot\b|KaloogaBot|Kraken|Kurzor|larbin|LEIA|LesnikBot|Linguee Bot|LinkAider|LinkedInBot|Lite Bot|Llaut|lycos|Mail\.RU_Bot|masscan|masidani_bot|Mediapartners-Google|Microsoft .*? Bot|mogimogi|mozDex|MJ12bot|msnbot(?:-media *)?|msrbot|Mtps Feed Aggregation System|netresearch|Netvibes|NewsGator[^/]*|^NING|Nutch[^/]*|Nymesis|ObjectsSearch|Orbiter|OOZBOT|PagePeeker|PagesInventory|PaxleFramework|Peeplo Screenshot Bot|PlantyNet_WebRobot|Pompos|Qwantify|Read%20Later|Reaper|RedCarpet|Retreiver|Riddler|Rival IQ|scooter|Scrapy|Scrubby|searchsight|seekbot|semanticdiscovery|SemrushBot|Simpy|SimplePie|SEOstats|SimpleRSS|SiteCon|Slackbot-LinkExpanding|Slack-ImgProxy|Slurp|snappy|Speedy Spider|Squrl Java|Stringer|TheUsefulbot|ThumbShotsBot|Thumbshots\.ru|Tiny Tiny RSS|TwitterBot|WhatsApp|URL2PNG|Vagabondo|VoilaBot|^vortex|Votay bot|^voyager|WASALive.Bot|Web-sniffer|WebThumb|WeSEE:[A-z]+|WhatWeb|WIRE|WordPress|Wotbox|www\.almaden\.ibm\.com|Xenu(?:.s)? Link Sleuth|Xerka [A-z]+Bot|yacy(?:bot)?|Yahoo[a-z]*Seeker|Yahoo! Slurp|Yandex\w+|YodaoBot(?:-[A-z]+)?|YottaaMonitor|Yowedo|^Zao|^Zao-Crawler|ZeBot_www\.ze\.bz|ZooShot|ZyBorg)(?:[ /]v?(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(Boto3?|JetS3t|aws-(?:cli|sdk-(?:cpp|go|java|nodejs|ruby2?))|s3fs)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:\/[A-Za-z0-9\.]+)? *([A-Za-z0-9 \-_\!\[\]:]*(?:[Aa]rchiver|[Ii]ndexer|[Ss]craper|[Bb]ot|[Ss]pider|[Cc]rawl[a-z]*))/(\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:\/[A-Za-z0-9\.]+)? *([A-Za-z0-9 _\!\[\]:]*(?:[Aa]rchiver|[Ii]ndexer|[Ss]craper|[Bb]ot|[Ss]pider|[Cc]rawl[a-z]*)) (\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;((?:[A-z0-9]+|[A-z\-]+ ?)?(?: the )?(?:[Ss][Pp][Ii][Dd][Ee][Rr]|[Ss]crape|[A-Za-z0-9-]*(?:[^C][^Uu])[Bb]ot|[Cc][Rr][Aa][Ww][Ll])[A-z0-9]*)(?:(?:[ /]| v)(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(HbbTV)/(\d+)\.(\d+)\.(\d+) \(&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chimera|SeaMonkey|Camino|Waterfox)/(\d+)\.(\d+)\.?([ab]?\d+[a-z]*)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\[FB.*;(FBAV)/(\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = &quot;Facebook&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\[(Pinterest)/[^\]]+\]&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pinterest)(?: for Android(?: Tablet)?)?/(\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Mozilla.*Mobile.*(Instagram).(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Mozilla.*Mobile.*(Flipboard).(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Mozilla.*Mobile.*(Flipboard-Briefing).(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Mozilla.*Mobile.*(Onefootball)\/Android.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+) Basilisk/(\d+)&quot;) {
+    set var.Family = &quot;Basilisk&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PaleMoon)/(\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = &quot;Pale Moon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Fennec)/(\d+)\.(\d+)\.?([ab]?\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Fennec)/(\d+)\.(\d+)(pre)&quot;) {
+    set var.Family = &quot;Firefox Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Fennec)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Firefox Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:Mobile|Tablet);.*(Firefox)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Firefox Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Namoroka|Shiretoko|Minefield)/(\d+)\.(\d+)\.(\d+(?:pre)?)&quot;) {
+    set var.Family = &quot;Firefox (&quot; re.group.1 &quot;)&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)(a\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Alpha&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)(b\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Beta&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)-(?:\d+\.\d+)?/(\d+)\.(\d+)(a\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Alpha&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)-(?:\d+\.\d+)?/(\d+)\.(\d+)(b\d+[a-z]*)&quot;) {
+    set var.Family = &quot;Firefox Beta&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Namoroka|Shiretoko|Minefield)/(\d+)\.(\d+)([ab]\d+[a-z]*)?&quot;) {
+    set var.Family = &quot;Firefox (&quot; re.group.1 &quot;)&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox).*Tablet browser (\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;MicroB&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MozillaDeveloperPreview)/(\d+)\.(\d+)([ab]\d+[a-z]*)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(FxiOS)/(\d+)\.(\d+)(\.(\d+))?(\.(\d+))?&quot;) {
+    set var.Family = &quot;Firefox iOS&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Flock)/(\d+)\.(\d+)(b\d+?)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(RockMelt)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Navigator)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Netscape&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Navigator)/(\d+)\.(\d+)([ab]\d+)&quot;) {
+    set var.Family = &quot;Netscape&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Netscape6)/(\d+)\.(\d+)\.?([ab]?\d+)?&quot;) {
+    set var.Family = &quot;Netscape&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MyIBrow)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;My Internet Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(UC? ?Browser|UCWEB|U3)[ /]?(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;UC Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera Tablet).*Version/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera Mini)(?:/att)?/?(\d+)?(?:\.(\d+))?(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera)/.+Opera Mobi.+Version/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera)/(\d+)\.(\d+).+Opera Mobi&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Opera Mobi.+(Opera)(?:/|\s+)(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Opera Mobi&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Opera)/9.80.*Version/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:Mobile Safari).*(OPR)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Opera Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(?:Chrome).*(OPR)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Opera&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Coast)/(\d+).(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Opera Coast&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OPiOS)/(\d+).(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Opera Mini&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Chrome/.+( MMS)/(\d+).(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Opera Neon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(hpw|web)OS/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;webOS Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(luakit)&quot;) {
+    set var.Family = &quot;LuaKit&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Snowshoe)/(\d+)\.(\d+).(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Gecko/\d+ (Lightning)/(\d+)\.(\d+)\.?((?:[ab]?\d+[a-z]*)|(?:\d*))&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)\.(\d+(?:pre)?) \(Swiftfox\)&quot;) {
+    set var.Family = &quot;Swiftfox&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)([ab]\d+[a-z]*)? \(Swiftfox\)&quot;) {
+    set var.Family = &quot;Swiftfox&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(rekonq)/(\d+)\.(\d+)\.?(\d+)? Safari&quot;) {
+    set var.Family = &quot;Rekonq&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;rekonq&quot;) {
+    set var.Family = &quot;Rekonq&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(conkeror|Conkeror)/(\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = &quot;Conkeror&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(konqueror)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Konqueror&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(WeTab)-Browser&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Comodo_Dragon)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Comodo Dragon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Symphony) (\d+).(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;PLAYSTATION 3.+WebKit&quot;) {
+    set var.Family = &quot;NetFront NX&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;PLAYSTATION 3&quot;) {
+    set var.Family = &quot;NetFront&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PlayStation Portable)&quot;) {
+    set var.Family = &quot;NetFront&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PlayStation Vita)&quot;) {
+    set var.Family = &quot;NetFront NX&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;AppleWebKit.+ (NX)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;NetFront NX&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Nintendo 3DS)&quot;) {
+    set var.Family = &quot;NetFront NX&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Silk)/(\d+)\.(\d+)(?:\.([0-9\-]+))?&quot;) {
+    set var.Family = &quot;Amazon Silk&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Puffin)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Windows Phone .*(Edge)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Edge Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SamsungBrowser)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Samsung Internet&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SznProhlizec)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Seznam prohl%u00ED%u017Ee%u010D&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(coc_coc_browser)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Coc Coc&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(baidubrowser)[/\s](\d+)(?:\.(\d+)(?:\.(\d+))?)?&quot;) {
+    set var.Family = &quot;Baidu Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(FlyFlow)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Baidu Explorer&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MxBrowser)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Maxthon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Crosswalk)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;; wv\).+(Chrome)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Mobile WebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(CrMo)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(CriOS)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Mobile iOS&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chrome)/(\d+)\.(\d+)\.(\d+)\.(\d+) Mobile(?:[ /]|$)&quot;) {
+    set var.Family = &quot;Chrome Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot; Mobile .*(Chrome)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(chromeframe)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Chrome Frame&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SLP Browser)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Tizen Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SE 2\.X) MetaSr (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Sogou Explorer&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MQQBrowser/Mini)(?:(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = &quot;QQ Browser Mini&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MQQBrowser)(?:/(\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = &quot;QQ Browser Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(QQBrowser)(?:/(\d+)(?:\.(\d+)\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = &quot;QQ Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Rackspace Monitoring)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;RackspaceBot&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PyAMF)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(YaBrowser)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Yandex Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chrome)/(\d+)\.(\d+)\.(\d+).* MRCHROME&quot;) {
+    set var.Family = &quot;Mail.ru Chromium Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(AOL) (\d+)\.(\d+); AOLBuild (\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PodCruncher|Downcast)[ /]?(\d+)\.?(\d+)?\.?(\d+)?\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot; (BoxNotes)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Slack_SSB)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Slack Desktop Client&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(HipChat)/?(\d+)?&quot;) {
+    set var.Family = &quot;HipChat Desktop Client&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(MobileIron|FireWeb|Jasmine|ANTGalio|Midori|Fresco|Lobo|PaleMoon|Maxthon|Lynx|OmniWeb|Dillo|Camino|Demeter|Fluid|Fennec|Epiphany|Shiira|Sunrise|Spotify|Flock|Netscape|Lunascape|WebPilot|NetFront|Netfront|Konqueror|SeaMonkey|Kazehakase|Vienna|Iceape|Iceweasel|IceWeasel|Iron|K-Meleon|Sleipnir|Galeon|GranParadiso|Opera Mini|iCab|NetNewsWire|ThunderBrowse|Iris|UP\.Browser|Bunjalloo|Google Earth|Raven for Mac|Openwave|MacOutlook|Electron|OktaMobile)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Microsoft Office Outlook 12\.\d+\.\d+|MSOffice 12&quot;) {
+    set var.Family = &quot;Outlook&quot;;
+    set var.Major = &quot;2007&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Microsoft Outlook 14\.\d+\.\d+|MSOffice 14&quot;) {
+    set var.Family = &quot;Outlook&quot;;
+    set var.Major = &quot;2010&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Microsoft Outlook 15\.\d+\.\d+&quot;) {
+    set var.Family = &quot;Outlook&quot;;
+    set var.Major = &quot;2013&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Microsoft Outlook (?:Mail )?16\.\d+\.\d+&quot;) {
+    set var.Family = &quot;Outlook&quot;;
+    set var.Major = &quot;2016&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;Outlook-Express\/7\.0.*&quot;) {
+    set var.Family = &quot;Windows Live Mail&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Airmail) (\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Thunderbird)/(\d+)\.(\d+)(?:\.(\d+(?:pre)?))?&quot;) {
+    set var.Family = &quot;Thunderbird&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Postbox)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Postbox&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Barca(?:Pro)?)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Barca&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Lotus-Notes)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Lotus Notes&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Vivaldi)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Edge)/(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(brave)/(\d+)\.(\d+)\.(\d+) Chrome&quot;) {
+    set var.Family = &quot;Brave&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chrome)/(\d+)\.(\d+)\.(\d+)[\d.]* Iron[^/]&quot;) {
+    set var.Family = &quot;Iron&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(Dolphin)(?: |HDCN/|/INT\-)(\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(HeadlessChrome)(?:/(\d+)\.(\d+)\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Evolution)/(\d+)\.(\d+)\.(\d+\.\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(RCM CardDAV plugin)/(\d+)\.(\d+)\.(\d+(?:-dev)?)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(bingbot|Bolt|AdobeAIR|Jasmine|IceCat|Skyfire|Midori|Maxthon|Lynx|Arora|IBrowse|Dillo|Camino|Shiira|Fennec|Phoenix|Flock|Netscape|Lunascape|Epiphany|WebPilot|Opera Mini|Opera|NetFront|Netfront|Konqueror|Googlebot|SeaMonkey|Kazehakase|Vienna|Iceape|Iceweasel|IceWeasel|Iron|K-Meleon|Sleipnir|Galeon|GranParadiso|iCab|iTunes|MacAppStore|NetNewsWire|Space Bison|Stainless|Orca|Dolfin|BOLT|Minimo|Tizen Browser|Polaris|Abrowser|Planetweb|ICE Browser|mDolphin|qutebrowser|Otter|QupZilla|MailBar|kmail2|YahooMobileMail|ExchangeWebServices|ExchangeServicesClient|Dragon|Outlook-iOS-Android)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Chromium|Chrome)/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(IEMobile)[ /](\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;IE Mobile&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(BacaBerita App)\/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(bPod|Pocket Casts|Player FM)$&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(AlexaMediaPlayer|VLC)/(\d+)\.(\d+)\.([^.\s]+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(AntennaPod|WMPlayer|Zune|Podkicker|Radio|ExoPlayerDemo|Overcast|PocketTunes|NSPlayer|okhttp|DoggCatcher|QuickNews|QuickTime|Peapod|Podcasts|GoldenPod|VLC|Spotify|Miro|MediaGo|Juice|iPodder|gPodder|Banshee)/(\d+)\.(\d+)\.?(\d+)?\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Peapod|Liferea)/([^.\s]+)\.([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(bPod|Player FM) BMID/(\S+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Podcast ?Addict)/v(\d+) &quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Podcast ?Addict) &quot;) {
+    set var.Family = &quot;PodcastAddict&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Replay) AV&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(VOX) Music Player&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(CITA) RSS Aggregator/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pocket Casts)$&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Player FM)$&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(LG Player|Doppler|FancyMusic|MediaMonkey|Clementine) (\d+)\.(\d+)\.?([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(philpodder)/(\d+)\.(\d+)\.?([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Player FM|Pocket Casts|DoggCatcher|Spotify|MediaMonkey|MediaGo|BashPodder)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(QuickTime)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Kinoma)(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Fancy) Cloud Music (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;FancyMusic&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;EspnDownloadManager&quot;) {
+    set var.Family = &quot;ESPN&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ESPN) Radio (\d+)\.(\d+)\.?(\d+)? ?(?:rv:(\d+))? &quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(podracer|jPodder) v ?(\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ZDM)/(\d+)\.(\d+)[; ]?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Zune|BeyondPod) (\d+)\.?(\d+)?[\);]&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(WMPlayer)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Lavf)&quot;) {
+    set var.Family = &quot;WMPlayer&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(RSSRadio)[ /]?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(RSS_Radio) (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;RSSRadio&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Podkicker) \S+/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Podkicker&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(HTC) Streaming Player \S+ / \S+ / \S+ / (\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Stitcher)/iOS&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Stitcher)/Android&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(VLC) .*version (\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot; (VLC) for&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(vlc)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;VLC&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(foobar)\S+/([^.\s]+)\.([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Clementine)\S+ ([^.\s]+)\.([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(amarok)/([^.\s]+)\.([^.\s]+)?\.?([^.\s]+)?&quot;) {
+    set var.Family = &quot;Amarok&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Custom)-Feed Reader&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iRider|Crazy Browser|SkipStone|iCab|Lunascape|Sleipnir|Maemo Browser) (\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iCab|Lunascape|Opera|Android|Jasmine|Polaris|Microsoft SkyDriveSync|The Bat!) (\d+)\.(\d+)\.?(\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Kindle)/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Donut&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;1&quot;;
+    set var.Minor=&quot;2&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Eclair&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;2&quot;;
+    set var.Minor=&quot;1&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Froyo&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;2&quot;;
+    set var.Minor=&quot;2&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Gingerbread&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;2&quot;;
+    set var.Minor=&quot;3&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Android) Honeycomb&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;3&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MSIE) (\d+)\.(\d+).*XBLWP7&quot;) {
+    set var.Family = &quot;IE Large Screen&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Nextcloud)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(mirall)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ownCloud-android)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Owncloud&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Obigo)InternetBrowser&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Obigo)\-Browser&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Obigo|OBIGO)[^\d]*(\d+)(?:.(\d+))?&quot;) {
+    set var.Family = &quot;Obigo&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(MAXTHON|Maxthon) (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Maxthon&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Maxthon|MyIE2|Uzbl|Shiira)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;0&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(BrowseX) \((\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NCSA_Mosaic)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;NCSA Mosaic&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(POLARIS)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Polaris&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Embider)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Polaris&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(BonEcho)/(\d+)\.(\d+)\.?([ab]?\d+)?&quot;) {
+    set var.Family = &quot;Bon Echo&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPhone|iPad).+Version/(\d+)\.(\d+)(?:\.(\d+))?.*[ +]Safari&quot;) {
+    set var.Family = &quot;Mobile Safari&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPod touch|iPhone|iPad);.*CPU.*OS[ +](\d+)_(\d+)(?:_(\d+))?.* AppleNews\/\d+\.\d+\.\d+?&quot;) {
+    set var.Family = &quot;Mobile Safari UI/WKWebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPhone|iPad).+Version/(\d+)\.(\d+)(?:\.(\d+))?&quot;) {
+    set var.Family = &quot;Mobile Safari UI/WKWebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPod touch|iPhone|iPad);.*CPU.*OS[ +](\d+)_(\d+)(?:_(\d+))?.*Mobile.*[ +]Safari&quot;) {
+    set var.Family = &quot;Mobile Safari&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPod touch|iPhone|iPad);.*CPU.*OS[ +](\d+)_(\d+)(?:_(\d+))?.*Mobile&quot;) {
+    set var.Family = &quot;Mobile Safari UI/WKWebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPhone|iPad).* Safari&quot;) {
+    set var.Family = &quot;Mobile Safari&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(iPod|iPhone|iPad)&quot;) {
+    set var.Family = &quot;Mobile Safari UI/WKWebView&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Outlook-iOS)/\d+\.\d+\.prod\.iphone \((\d+)\.(\d+)\.(\d+)\)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(AvantGo) (\d+).(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OneBrowser)/(\d+).(\d+)&quot;) {
+    set var.Family = &quot;ONE Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Avant)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;1&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(QtCarBrowser)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;1&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(iBrowser/Mini)(\d+).(\d+)&quot;) {
+    set var.Family = &quot;iBrowser Mini&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(iBrowser|iRAPP)/(\d+).(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Nokia)&quot;) {
+    set var.Family = &quot;Nokia Services (WAP) Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NokiaBrowser)/(\d+)\.(\d+).(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NokiaBrowser)/(\d+)\.(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(NokiaBrowser)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(BrowserNG)/(\d+)\.(\d+).(\d+)&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Series60)/5\.0&quot;) {
+    set var.Family = &quot;Nokia Browser&quot;;
+    set var.Major = &quot;7&quot;;
+    set var.Minor=&quot;0&quot;;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Series60)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Nokia OSS Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(S40OviBrowser)/(\d+)\.(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Ovi Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Nokia)[EN]?(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PlayBook).+RIM Tablet OS (\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;BlackBerry WebKit&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Black[bB]erry|BB10).+Version/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;BlackBerry WebKit&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Black[bB]erry)\s?(\d+)&quot;) {
+    set var.Family = &quot;BlackBerry&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OmniWeb)/v(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Blazer)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Palm Blazer&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Pre)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Palm Pre&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ELinks)/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(ELinks) \((\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Links) \((\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(QtWeb) Internet Browser/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(PhantomJS)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(AppleWebKit)/(\d+)\.?(\d+)?\+ .* Safari&quot;) {
+    set var.Family = &quot;WebKit Nightly&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Version)/(\d+)\.(\d+)(?:\.(\d+))?.*Safari/&quot;) {
+    set var.Family = &quot;Safari&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Safari)/\d+&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OLPC)/Update(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(OLPC)/Update()\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = &quot;0&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(SEMC\-Browser)/(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Teleca)&quot;) {
+    set var.Family = &quot;Teleca Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Phantom)/V(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Phantom Browser&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Trident)/(7|8)\.(0)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = &quot;11&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Trident)/(6)\.(0)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = &quot;10&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Trident)/(5)\.(0)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = &quot;9&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Trident)/(4)\.(0)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = &quot;8&quot;;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Espial)/(\d+)(?:\.(\d+))?(?:\.(\d+))?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(AppleWebKit)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Apple Mail&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Firefox)/(\d+)\.(\d+)(pre|[ab]\d+[a-z]*)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;([MS]?IE) (\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;IE&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(python-requests)/(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Python Requests&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;\b(Windows-Update-Agent|Microsoft-CryptoAPI|SophosUpdateManager|SophosAgent|Debian APT-HTTP|Ubuntu APT-HTTP|libcurl-agent|libwww-perl|urlgrabber|curl|PycURL|Wget|aria2|Axel|OpenBSD ftp|lftp|jupdate)(?:[ /](\d+)(?:\.(\d+)(?:\.(\d+))?)?)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Java)[/ ]{0,1}\d+\.(\d+)\.(\d+)[_-]*([a-zA-Z0-9]+)*&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Cyberduck)/(\d+)\.(\d+)\.(\d+)(?:\.\d+)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(S3 Browser) (\d+)-(\d+)-(\d+)(?:\s*http://s3browser\.com)?&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(rclone)/v(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Roku)/DVP-(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;(Kurio)\/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = &quot;Kurio App&quot;;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  } else if (req.http.User-Agent ~ &quot;^(Box(?: Sync)?)/(\d+)\.(\d+)\.(\d+)&quot;) {
+    set var.Family = re.group.1;
+    set var.Major = re.group.2;
+    set var.Minor = re.group.3;
+    set var.Patch = re.group.4;
+  }
+  set req.http.useragent_parser_family=var.Family;
+  set req.http.useragent_parser_major=var.Major;
+  set req.http.useragent_parser_minor=var.Minor;
+  set req.http.useragent_parser_patch=var.Patch;
+}
+sub vcl_recv {
+  # Store original url for logging purposes.
+  declare local var.original-url STRING;
+  set var.original-url = req.url;
+
+  call normalise_user_agent_latest;
+
+  log &quot;Normalized-User-Agent: &quot; req.http.Normalized-User-Agent;
+
+  set req.url = querystring.set(req.url, &quot;ua&quot;, req.http.Normalized-User-Agent);
+
+  log &quot;Original url: &quot; var.original-url;
+  log &quot;Updated  url: &quot; req.url;
+}
+</code></pre>
+<p>As I said, this change is the one that brought about the biggest improvement in our cache-hit ratio. Instead of getting a different cache-entry for every browser family and version, we only get different cache-entries for browser family and versions we support. As of writing this article, that works out to be roughly 300 different cache entries (Chrome has roughly 70 releases, Edge has 6 etc).</p>
+
+          </article>
+        </main>
+      </div>
+       <script
+  data-goatcounter="https://jdc.goatcounter.com/count"
+  async
+  src="../../../gc.zgo.at/count.js"
+></script>
+    </body>
+  
+<!-- Mirrored from Habib Rajput's/blog/improving-the-cache-performance-of-the-polyfill-service-even-more/ by HTTrack Website Copier/3.x [XR&CO'2014], Mon, 20 Nov 2023 05:29:29 GMT -->
+</html>
